@@ -14,7 +14,7 @@ from statsmodels.regression.linear_model import OLS
 from statsmodels.tools import add_constant
 from statsmodels.tsa.vector_ar.vecm import coint_johansen
 
-st.set_page_config(page_title="tahmin.ai | indikatör ilişkileri analizi", layout="centered")
+st.set_page_config(page_title="tahmin.ai | Regresyon Sihirbazı", layout="centered")
 
 st.markdown("""
 <style>
@@ -27,7 +27,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🧭 indikatör ilişkileri analizi")
+st.title("🧭 Regresyon Tanı Sihirbazı")
 st.caption("Adım adım regresyon varsayım kontrolü — her sorun tespit edilir, düzeltilir, sonuç raporlanır.")
 
 # ============================================================
@@ -256,14 +256,16 @@ if run and symbol:
     sub        = df[candidates + [target]].dropna()
 
     # ==============================================================
-    # ADIM 1 — Spearman Korelasyon
+    # ADIM 1 — Spearman Korelasyon (Bonferroni düzeltmeli)
     # ==============================================================
     step += 1
-    corr_vals   = sub[candidates].apply(lambda col: stats.spearmanr(col, sub[target])[0]).abs()
-    low_list    = corr_vals[corr_vals < corr_low].index.tolist()
-    fm          = sub[candidates].corr(method="spearman").abs()
-    upper       = fm.where(np.triu(np.ones(fm.shape), k=1).astype(bool))
-    high_list   = []
+    n_tests        = len(candidates)
+    bonferroni_thr = corr_low / n_tests  # Bonferroni: α / n
+    corr_vals      = sub[candidates].apply(lambda col: stats.spearmanr(col, sub[target])[0]).abs()
+    low_list       = corr_vals[corr_vals < bonferroni_thr].index.tolist()
+    fm             = sub[candidates].corr(method="spearman").abs()
+    upper          = fm.where(np.triu(np.ones(fm.shape), k=1).astype(bool))
+    high_list      = []
     for col in upper.columns:
         partners = upper.index[upper[col] > corr_high].tolist()
         for p in partners:
@@ -273,15 +275,18 @@ if run and symbol:
     corr_remove = list(set(low_list + high_list))
     after_corr  = [f for f in candidates if f not in corr_remove]
 
+    bonferroni_info = f"Bonferroni düzeltmesi: eşik = {corr_low:.2f} / {n_tests} = {bonferroni_thr:.4f}"
+
     if corr_remove:
         step_card(step, "Spearman Korelasyon", "fix",
-                  f"{len(candidates)} feature'dan başlandı. Düşük |ρ|: {low_list if low_list else 'Yok'}. Yüksek çapraz korelasyon: {high_list if high_list else 'Yok'}.",
+                  f"{len(candidates)} feature test edildi. {bonferroni_info}. "
+                  f"Düşük |ρ|: {low_list if low_list else 'Yok'}. Yüksek çapraz korelasyon: {high_list if high_list else 'Yok'}.",
                   f"{len(corr_remove)} feature çıkarıldı → {len(after_corr)} kaldı: `{'`, `'.join(after_corr)}`")
-        notes.append(f"Spearman filtresi: {len(corr_remove)} feature çıkarıldı.")
+        notes.append(f"Spearman filtresi (Bonferroni): {len(corr_remove)} feature çıkarıldı. Eşik={bonferroni_thr:.4f}")
     else:
         step_card(step, "Spearman Korelasyon", "pass",
-                  f"{len(candidates)} feature test edildi. Düşük korelasyon veya multicollinearity tespit edilmedi.",)
-        notes.append("Spearman filtresi: tüm feature'lar geçti.")
+                  f"{len(candidates)} feature test edildi. {bonferroni_info}. Düşük korelasyon veya multicollinearity tespit edilmedi.")
+        notes.append(f"Spearman filtresi (Bonferroni): tüm feature'lar geçti. Eşik={bonferroni_thr:.4f}")
 
     # ==============================================================
     # ADIM 2 — VIF (Iterative)
@@ -503,22 +508,35 @@ if run and symbol:
         notes.append("Yapısal kırılma: yok.")
 
     # ==============================================================
+    # ==============================================================
     # ADIM 9 — Eşbütünleşme (Johansen)
     # ==============================================================
     step += 1
-    johansen_n = 0
-    johansen_ok = False
+    johansen_n    = 0
+    johansen_ok   = False
+    johansen_note = ""
     try:
-        cols_j  = after_vif + [target]
-        data_j  = df[cols_j].dropna().values.astype(float)
-        data_jz = scipy_zscore(data_j, axis=0)
-        res_j   = coint_johansen(data_jz, det_order=0, k_ar_diff=1)
+        cols_j = after_vif + [target]
+        data_j = df[cols_j].dropna().values.astype(float)
+        # Ham veri ile dene — Johansen seviye verisiyle çalışmalı
+        res_j  = coint_johansen(data_j, det_order=0, k_ar_diff=1)
         for i in range(len(res_j.lr1)):
             if res_j.lr1[i] is not None and res_j.lr1[i] > res_j.cvt[i, 1]:
                 johansen_n += 1
-        johansen_ok = johansen_n > 0
-    except Exception as e:
-        johansen_n = -1
+        johansen_ok   = johansen_n > 0
+        johansen_note = "Ham (level) veri kullanıldı."
+    except Exception:
+        # Ham veri matris hatasına yol açtıysa z-score ile tekrar dene
+        try:
+            data_jz = scipy_zscore(data_j, axis=0)
+            res_j   = coint_johansen(data_jz, det_order=0, k_ar_diff=1)
+            for i in range(len(res_j.lr1)):
+                if res_j.lr1[i] is not None and res_j.lr1[i] > res_j.cvt[i, 1]:
+                    johansen_n += 1
+            johansen_ok   = johansen_n > 0
+            johansen_note = "⚠️ Ham veri matris hatasına yol açtı — z-score ile tekrar çalıştırıldı. Sonuçlar gösterge niteliğindedir."
+        except Exception:
+            johansen_n = -1
 
     if johansen_n == -1:
         step_card(step, "Johansen — Eşbütünleşme", "info",
@@ -528,11 +546,11 @@ if run and symbol:
         step_card(step, "Johansen — Eşbütünleşme", "pass",
                   f"{johansen_n} eşbütünleşme ilişkisi tespit edildi. "
                   "Feature'lar ve target arasında uzun vadeli gerçek ilişki var. "
-                  "OLS katsayıları güvenilir — sahte regresyon değil.")
-        notes.append(f"Eşbütünleşme: {johansen_n} ilişki — OLS güvenilir.")
+                  f"OLS katsayıları güvenilir — sahte regresyon değil. {johansen_note}")
+        notes.append(f"Eşbütünleşme: {johansen_n} ilişki — OLS güvenilir. {johansen_note}")
     else:
         step_card(step, "Johansen — Eşbütünleşme", "fail",
-                  "Eşbütünleşme tespit edilmedi. "
+                  f"Eşbütünleşme tespit edilmedi. {johansen_note} "
                   "Seviye regresyonu sahte olabilir. Return modeli önerilir.")
         notes.append("Eşbütünleşme: yok — Return modeli önerilir.")
 
