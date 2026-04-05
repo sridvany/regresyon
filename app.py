@@ -14,7 +14,7 @@ from statsmodels.regression.linear_model import OLS
 from statsmodels.tools import add_constant
 from statsmodels.tsa.vector_ar.vecm import coint_johansen
 
-st.set_page_config(page_title="tahmin.ai | Regresyon Sihirbazı", layout="centered")
+st.set_page_config(page_title="tahmin.ai | indikatör ilişkileri analizi", layout="centered")
 
 st.markdown("""
 <style>
