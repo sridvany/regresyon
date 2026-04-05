@@ -796,24 +796,42 @@ if run and symbol:
     else:
         # Karma I(0)+I(1) → ARDL Bounds Test (Pesaran et al., 2001)
         try:
-            # Target bağımlı değişken; I(1) ve I(0) feature'lar karışık regressör
-            _ardl_y   = df[target].dropna()
-            _ardl_x   = df[after_vif].dropna()
-            _common   = _ardl_y.index.intersection(_ardl_x.index)
-            _ardl_y   = _ardl_y.loc[_common]
-            _ardl_x   = _ardl_x.loc[_common]
+            # Veri hazırlık — ham level veri (fark alınmamış)
+            _ardl_y  = df[target].dropna()
+            _ardl_x  = df[after_vif].dropna()
+            _common  = _ardl_y.index.intersection(_ardl_x.index)
+            _ardl_y  = _ardl_y.loc[_common]
+            _ardl_x  = _ardl_x.loc[_common]
+            _ardl_y  = _ardl_y.replace([np.inf, -np.inf], np.nan).dropna()
+            _common2 = _ardl_y.index.intersection(_ardl_x.index)
+            _ardl_y  = _ardl_y.loc[_common2]
+            _ardl_x  = _ardl_x.loc[_common2].replace([np.inf, -np.inf], np.nan).dropna()
+            _common3 = _ardl_y.index.intersection(_ardl_x.index)
+            _ardl_y  = _ardl_y.loc[_common3]
+            _ardl_x  = _ardl_x.loc[_common3]
 
-            # Parsimonious ARDL(1,1): p=1 AR lag, q=1 DL lag
-            # Günlük finansal veride standart kabul — lag optimizasyonu
-            # 12+ feature ile kombinatoryal patlama yaratır.
-            _ardl_m   = ARDL(_ardl_y, lags=1, order={col: 1 for col in _ardl_x.columns}, trend="c")
-            _ardl_fit = _ardl_m.fit()
-            _bounds   = _ardl_fit.bounds_test(case=2)   # kısıtlı sabit, trend yok
+            # Parsimonious ARDL(1,1): p=1 AR lag, q=1 DL lag her regressör için
+            # statsmodels ARDL API: order=int tüm exog'a aynı lag uygular
+            _ardl_m   = ARDL(endog=_ardl_y, lags=1, exog=_ardl_x, order=1, trend="c")
+            _ardl_fit = _ardl_m.fit(disp=False)
 
-            # Pesaran kritik değerleri: %5 için üst sınır (I(1) bound)
-            _f_stat   = float(_bounds.stat)
-            _crit_u   = float(_bounds.crit_vals.loc["5%", "upper"])
-            _crit_l   = float(_bounds.crit_vals.loc["5%", "lower"])
+            # bounds_test: case=3 → kısıtsız sabit, trend yok (en yaygın kullanım)
+            _bounds  = _ardl_fit.bounds_test(case=3)
+            _f_stat  = float(_bounds.stat)
+
+            # Kritik değerlere güvenli erişim
+            _cv      = _bounds.crit_vals
+            # DataFrame ise loc, Series/array ise positional
+            if hasattr(_cv, 'loc'):
+                try:
+                    _crit_l = float(_cv.loc["5%", "lower"])
+                    _crit_u = float(_cv.loc["5%", "upper"])
+                except:
+                    _crit_l = float(_cv.iloc[1, 0])
+                    _crit_u = float(_cv.iloc[1, 1])
+            else:
+                # fallback: Pesaran (2001) Table CI(iii) k=10, %5
+                _crit_l, _crit_u = 2.39, 3.38
 
             ardl_ok    = _f_stat > _crit_u
             coint_note = (f"ARDL(1,1) Bounds Test (Pesaran, 2001). "
@@ -830,13 +848,13 @@ if run and symbol:
                           f"F={_f_stat:.4f} — alt ({_crit_l:.2f}) ve üst ({_crit_u:.2f}) sınır arasında: belirsiz bölge. "
                           f"{coint_note}")
                 notes.append(f"ARDL Bounds: belirsiz bölge (F={_f_stat:.4f}).")
-                ardl_ok = True  # passed_count için kabul edilebilir
+                ardl_ok = True
             else:
                 step_card(step, "ARDL Bounds Test — Eşbütünleşme", "fail",
                           f"F={_f_stat:.4f} < alt sınır {_crit_l:.2f} — uzun vadeli ilişki yok. {coint_note}")
                 notes.append(f"ARDL Bounds: eşbütünleşme yok (F={_f_stat:.4f}).")
 
-            johansen_ok = ardl_ok  # passed_count tutarlılığı için
+            johansen_ok = ardl_ok
 
         except Exception as e:
             step_card(step, "ARDL Bounds Test — Eşbütünleşme", "info",
