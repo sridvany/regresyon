@@ -401,7 +401,6 @@ if run and symbol:
     # ADIM 4 — Otokorelasyon (Ljung-Box)
     # ==============================================================
     step += 1
-    use_hac = False
     try:
         lb     = acorr_ljungbox(resid, lags=[10], return_df=True)
         lb_p   = float(lb["lb_pvalue"].iloc[0])
@@ -409,30 +408,20 @@ if run and symbol:
     except:
         lb_p = np.nan; has_ac = False
 
+    # Kart — HAC kararı henüz verilmedi, sadece tespit göster
     if has_ac:
         step_card(step, "Ljung-Box — Otokorelasyon", "fix",
-                  f"p = {lb_p:.4f} < 0.05 — artıklarda otokorelasyon var. Standart OLS standart hataları güvenilmez.",
-                  "HAC (Newey-West, maxlags=5) standart hatalar uygulandı.")
-        use_hac = True
-        notes.append("Otokorelasyon tespit edildi → HAC uygulandı.")
-        applied.append("HAC standart hata")
+                  f"p = {lb_p:.4f} < 0.05 — artıklarda otokorelasyon var.",
+                  "HAC (Newey-West, maxlags=5) standart hatalar uygulanacak.")
+        notes.append("Otokorelasyon tespit edildi → HAC tetiklendi.")
     else:
         step_card(step, "Ljung-Box — Otokorelasyon", "pass",
-                  f"p = {lb_p:.4f} ≥ 0.05 — artıklarda otokorelasyon yok. Standart OLS yeterli.")
+                  f"p = {lb_p:.4f} ≥ 0.05 — artıklarda otokorelasyon yok.")
         notes.append("Otokorelasyon yok.")
-
-    # HAC uygula
-    try:
-        if use_hac:
-            ols_fit = OLS(y, X).fit(cov_type="HAC", cov_kwds={"maxlags": 5})
-        else:
-            ols_fit = ols_base
-        resid = ols_fit.resid
-    except:
-        ols_fit = ols_base
 
     # ==============================================================
     # ADIM 5 — ARCH (Heteroskedasticity)
+    # — Ham artıklar üzerinde test et, HAC kararından bağımsız
     # ==============================================================
     step += 1
     try:
@@ -442,15 +431,34 @@ if run and symbol:
         arch_p = np.nan; has_arch = False
 
     if has_arch:
-        step_card(step, "ARCH — Heteroskedasticity", "fix" if use_hac else "fail",
+        step_card(step, "ARCH — Heteroskedasticity", "fix",
                   f"p = {arch_p:.4f} < 0.05 — volatilite kümelenmesi var.",
-                  "HAC standart hatalar ARCH etkisini kısmen yönetir. ✅" if use_hac else
-                  "HAC uygulanmadı. GARCH modelleme düşünülebilir.")
-        notes.append(f"ARCH etkisi: {'HAC ile yönetildi.' if use_hac else 'yönetilmedi.'}")
+                  "HAC (Newey-West, maxlags=5) standart hatalar uygulanacak — ARCH etkisini kısmen yönetir.")
+        notes.append("ARCH etkisi tespit edildi → HAC tetiklendi.")
     else:
         step_card(step, "ARCH — Heteroskedasticity", "pass",
                   f"p = {arch_p:.4f} ≥ 0.05 — sabit varyans. OLS verimli.")
         notes.append("ARCH etkisi yok.")
+
+    # HAC kararı: Ljung-Box VEYA ARCH başarısız olursa uygula
+    use_hac = has_ac or has_arch
+    try:
+        if use_hac:
+            ols_fit = OLS(y, X).fit(cov_type="HAC", cov_kwds={"maxlags": 5})
+            hac_reason = []
+            if has_ac:   hac_reason.append("otokorelasyon")
+            if has_arch: hac_reason.append("ARCH etkisi")
+            st.markdown(
+                f'<div class="step-box step-fix">🔧 <b>HAC Uygulandı</b> — '
+                f'Neden: {" + ".join(hac_reason)}. Newey-West (maxlags=5) standart hatalar aktif.</div>',
+                unsafe_allow_html=True
+            )
+            applied.append(f"HAC standart hata ({', '.join(hac_reason)})")
+        else:
+            ols_fit = ols_base
+        resid = ols_fit.resid
+    except:
+        ols_fit = ols_base
 
     # ==============================================================
     # ADIM 6 — Normallik (Jarque-Bera) — artıklara
