@@ -794,73 +794,64 @@ if run and symbol:
             notes.append("Johansen: eşbütünleşme yok.")
 
     else:
-        # Karma I(0)+I(1) → ARDL Bounds Test (Pesaran et al., 2001)
+        # Karma I(0)+I(1) — Engle-Granger ikili eşbütünleşme testi
+        # ARDL Bounds Test yerine: her I(1) feature ile target arasında
+        # pairwise EG testi uygulanır. Hızlı ve karma entegrasyonda geçerli.
+        from statsmodels.tsa.stattools import coint as eg_coint
         try:
-            # Veri hazırlık — ham level veri (fark alınmamış)
-            _ardl_y  = df[target].dropna()
-            _ardl_x  = df[after_vif].dropna()
-            _common  = _ardl_y.index.intersection(_ardl_x.index)
-            _ardl_y  = _ardl_y.loc[_common]
-            _ardl_x  = _ardl_x.loc[_common]
-            _ardl_y  = _ardl_y.replace([np.inf, -np.inf], np.nan).dropna()
-            _common2 = _ardl_y.index.intersection(_ardl_x.index)
-            _ardl_y  = _ardl_y.loc[_common2]
-            _ardl_x  = _ardl_x.loc[_common2].replace([np.inf, -np.inf], np.nan).dropna()
-            _common3 = _ardl_y.index.intersection(_ardl_x.index)
-            _ardl_y  = _ardl_y.loc[_common3]
-            _ardl_x  = _ardl_x.loc[_common3]
+            _eg_y      = df[target].dropna()
+            _eg_pairs  = []   # (feature, p-value, sonuç)
+            _coint_cnt = 0
 
-            # UECM (Unrestricted ECM) — bounds_test bu sınıfta mevcut
-            # Parsimonious UECM(1,1): p=1 AR lag, q=1 DL lag
-            _uecm_m  = UECM(endog=_ardl_y, lags=1, exog=_ardl_x, order=1, trend="c")
-            _ardl_fit = _uecm_m.fit()
-
-            # bounds_test: case=3 → kısıtsız sabit, trend yok
-            _bounds  = _ardl_fit.bounds_test(case=3)
-            _f_stat  = float(_bounds.stat)
-
-            # Kritik değerlere güvenli erişim
-            _cv      = _bounds.crit_vals
-            # DataFrame ise loc, Series/array ise positional
-            if hasattr(_cv, 'loc'):
+            # Sadece I(1) feature'larla test — I(0) zaten durağan
+            _test_cols = i1_feats if i1_feats else after_vif
+            for _col in _test_cols:
                 try:
-                    _crit_l = float(_cv.loc["5%", "lower"])
-                    _crit_u = float(_cv.loc["5%", "upper"])
+                    _eg_x   = df[_col].dropna()
+                    _common = _eg_y.index.intersection(_eg_x.index)
+                    if len(_common) < 50:
+                        continue
+                    _, _p, _ = eg_coint(_eg_y.loc[_common], _eg_x.loc[_common])
+                    _sig = _p < 0.05
+                    if _sig: _coint_cnt += 1
+                    _eg_pairs.append({"Feature": _col,
+                                      "p-değeri": round(_p, 4),
+                                      "Durum": "✅ Eşbütünleşik" if _sig else "❌ Yok"})
                 except:
-                    _crit_l = float(_cv.iloc[1, 0])
-                    _crit_u = float(_cv.iloc[1, 1])
-            else:
-                # fallback: Pesaran (2001) Table CI(iii) k=10, %5
-                _crit_l, _crit_u = 2.39, 3.38
+                    pass
 
-            ardl_ok    = _f_stat > _crit_u
-            coint_note = (f"ARDL(1,1) Bounds Test (Pesaran, 2001). "
-                          f"F={_f_stat:.4f}, %5 kritik: alt={_crit_l:.2f} üst={_crit_u:.2f}. "
-                          f"Karma entegrasyon: I(0)={i0_feats}, I(1)={i1_feats}.")
+            ardl_ok    = _coint_cnt > 0
+            coint_note = (f"Engle-Granger ikili eşbütünleşme (karma entegrasyon). "
+                          f"{_coint_cnt}/{len(_eg_pairs)} I(1) feature ile eşbütünleşme bulundu. "
+                          f"I(0)={i0_feats}, I(1)={i1_feats}.")
 
             if ardl_ok:
-                step_card(step, "ARDL Bounds Test — Eşbütünleşme", "pass",
-                          f"F={_f_stat:.4f} > I(1) üst sınır {_crit_u:.2f} — uzun vadeli ilişki var. "
+                step_card(step, "Engle-Granger — Eşbütünleşme (Karma)", "pass",
+                          f"{_coint_cnt}/{len(_eg_pairs)} I(1) feature ile uzun vadeli ilişki var. "
                           f"OLS katsayıları güvenilir. {coint_note}")
-                notes.append(f"ARDL Bounds: eşbütünleşme var (F={_f_stat:.4f}). OLS güvenilir.")
-            elif _f_stat > _crit_l:
-                step_card(step, "ARDL Bounds Test — Eşbütünleşme", "info",
-                          f"F={_f_stat:.4f} — alt ({_crit_l:.2f}) ve üst ({_crit_u:.2f}) sınır arasında: belirsiz bölge. "
-                          f"{coint_note}")
-                notes.append(f"ARDL Bounds: belirsiz bölge (F={_f_stat:.4f}).")
-                ardl_ok = True
+                notes.append(f"EG eşbütünleşme: {_coint_cnt} ilişki — OLS güvenilir.")
             else:
-                step_card(step, "ARDL Bounds Test — Eşbütünleşme", "fail",
-                          f"F={_f_stat:.4f} < alt sınır {_crit_l:.2f} — uzun vadeli ilişki yok. {coint_note}")
-                notes.append(f"ARDL Bounds: eşbütünleşme yok (F={_f_stat:.4f}).")
+                step_card(step, "Engle-Granger — Eşbütünleşme (Karma)", "fail",
+                          f"Hiçbir I(1) feature ile eşbütünleşme bulunamadı. {coint_note}")
+                notes.append("EG eşbütünleşme: yok.")
+
+            # EG detay tablosu
+            if _eg_pairs:
+                with st.expander("Engle-Granger detayları"):
+                    def _eg_c(val):
+                        if not isinstance(val, str): return ""
+                        if val.startswith("✅"): return "background-color:#d1e7dd; color:#0a3622"
+                        if val.startswith("❌"): return "background-color:#f8d7da; color:#842029"
+                        return ""
+                    st.dataframe(pd.DataFrame(_eg_pairs).style.map(_eg_c, subset=["Durum"]),
+                                 use_container_width=True, hide_index=True)
 
             johansen_ok = ardl_ok
 
         except Exception as e:
-            step_card(step, "ARDL Bounds Test — Eşbütünleşme", "info",
-                      f"Karma entegrasyon tespit edildi ancak ARDL testi çalıştırılamadı: {e}. "
-                      "Manuel kontrol önerilir.")
-            notes.append(f"ARDL Bounds: hata — {e}")
+            step_card(step, "Engle-Granger — Eşbütünleşme (Karma)", "info",
+                      f"Test çalıştırılamadı: {e}")
+            notes.append(f"EG eşbütünleşme: hata — {e}")
 
     # ==============================================================
     # ADIM 10 — MODEL SONUÇLARI
