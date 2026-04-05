@@ -813,7 +813,7 @@ if run and symbol:
             # Parsimonious ARDL(1,1): p=1 AR lag, q=1 DL lag her regressör için
             # statsmodels ARDL API: order=int tüm exog'a aynı lag uygular
             _ardl_m   = ARDL(endog=_ardl_y, lags=1, exog=_ardl_x, order=1, trend="c")
-            _ardl_fit = _ardl_m.fit(disp=False)
+            _ardl_fit = _ardl_m.fit()
 
             # bounds_test: case=3 → kısıtsız sabit, trend yok (en yaygın kullanım)
             _bounds  = _ardl_fit.bounds_test(case=3)
