@@ -124,6 +124,7 @@ def calc_amihud(close, volume):
     return ret / volume.replace(0, np.nan)
 
 def calc_mec(close, window=63):
+    # T = ret_long_period / ret_short_period = 30 / 5 = 6
     T = 6
     ret_long = np.log(close / close.shift(30))
     ret_short = np.log(close / close.shift(5))
@@ -508,51 +509,62 @@ if run and symbol:
         notes.append("Yapısal kırılma: yok.")
 
     # ==============================================================
-    # ==============================================================
     # ADIM 9 — Eşbütünleşme (Johansen)
     # ==============================================================
     step += 1
     johansen_n    = 0
     johansen_ok   = False
     johansen_note = ""
-    try:
-        cols_j = after_vif + [target]
-        data_j = df[cols_j].dropna().values.astype(float)
-        # Ham veri ile dene — Johansen seviye verisiyle çalışmalı
-        res_j  = coint_johansen(data_j, det_order=0, k_ar_diff=1)
-        for i in range(len(res_j.lr1)):
-            if res_j.lr1[i] is not None and res_j.lr1[i] > res_j.cvt[i, 1]:
-                johansen_n += 1
-        johansen_ok   = johansen_n > 0
-        johansen_note = "Ham (level) veri kullanıldı."
-    except Exception:
-        # Ham veri matris hatasına yol açtıysa z-score ile tekrar dene
+
+    # Johansen testi yalnızca seriler durağan DEĞİLSE anlamlıdır.
+    # use_return=True → ADF durağan olmayan seri tespit etti → level veriyle Johansen geçerli.
+    # use_return=False → tüm seriler zaten durağan → eşbütünleşme testi uygulanamaz,
+    #   durağan seriler üzerinde Johansen çalıştırmak anlamsız sonuç üretir.
+    if not use_return:
+        step_card(step, "Johansen — Eşbütünleşme", "info",
+                  "Tüm seriler ADF testinde durağan bulundu. "
+                  "Eşbütünleşme testi yalnızca I(1) (durağan olmayan) seriler için geçerlidir — atlandı.")
+        notes.append("Johansen: seriler durağan → test uygulanamaz, atlandı.")
+    else:
+        # Johansen seviye (level) verisiyle çalışır.
+        # use_return=True ise seriler durağan değildi → ham df doğru girdi.
         try:
-            data_jz = scipy_zscore(data_j, axis=0)
-            res_j   = coint_johansen(data_jz, det_order=0, k_ar_diff=1)
+            cols_j = after_vif + [target]
+            data_j = df[cols_j].dropna().values.astype(float)
+            res_j  = coint_johansen(data_j, det_order=0, k_ar_diff=1)
             for i in range(len(res_j.lr1)):
                 if res_j.lr1[i] is not None and res_j.lr1[i] > res_j.cvt[i, 1]:
                     johansen_n += 1
             johansen_ok   = johansen_n > 0
-            johansen_note = "⚠️ Ham veri matris hatasına yol açtı — z-score ile tekrar çalıştırıldı. Sonuçlar gösterge niteliğindedir."
+            johansen_note = "Ham (level) veri kullanıldı."
         except Exception:
-            johansen_n = -1
+            # Ham veri matris hatasına yol açtıysa z-score ile tekrar dene
+            try:
+                data_jz = scipy_zscore(data_j, axis=0)
+                res_j   = coint_johansen(data_jz, det_order=0, k_ar_diff=1)
+                for i in range(len(res_j.lr1)):
+                    if res_j.lr1[i] is not None and res_j.lr1[i] > res_j.cvt[i, 1]:
+                        johansen_n += 1
+                johansen_ok   = johansen_n > 0
+                johansen_note = "⚠️ Ham veri matris hatasına yol açtı — z-score ile tekrar çalıştırıldı. Sonuçlar gösterge niteliğindedir."
+            except Exception:
+                johansen_n = -1
 
-    if johansen_n == -1:
-        step_card(step, "Johansen — Eşbütünleşme", "info",
-                  "Test çalıştırılamadı (matris hatası). Engle-Granger ikili testini deneyin.")
-        notes.append("Johansen: hata.")
-    elif johansen_ok:
-        step_card(step, "Johansen — Eşbütünleşme", "pass",
-                  f"{johansen_n} eşbütünleşme ilişkisi tespit edildi. "
-                  "Feature'lar ve target arasında uzun vadeli gerçek ilişki var. "
-                  f"OLS katsayıları güvenilir — sahte regresyon değil. {johansen_note}")
-        notes.append(f"Eşbütünleşme: {johansen_n} ilişki — OLS güvenilir. {johansen_note}")
-    else:
-        step_card(step, "Johansen — Eşbütünleşme", "fail",
-                  f"Eşbütünleşme tespit edilmedi. {johansen_note} "
-                  "Seviye regresyonu sahte olabilir. Return modeli önerilir.")
-        notes.append("Eşbütünleşme: yok — Return modeli önerilir.")
+        if johansen_n == -1:
+            step_card(step, "Johansen — Eşbütünleşme", "info",
+                      "Test çalıştırılamadı (matris hatası). Engle-Granger ikili testini deneyin.")
+            notes.append("Johansen: hata.")
+        elif johansen_ok:
+            step_card(step, "Johansen — Eşbütünleşme", "pass",
+                      f"{johansen_n} eşbütünleşme ilişkisi tespit edildi. "
+                      "Feature'lar ve target arasında uzun vadeli gerçek ilişki var. "
+                      f"OLS katsayıları güvenilir — sahte regresyon değil. {johansen_note}")
+            notes.append(f"Eşbütünleşme: {johansen_n} ilişki — OLS güvenilir. {johansen_note}")
+        else:
+            step_card(step, "Johansen — Eşbütünleşme", "fail",
+                      f"Eşbütünleşme tespit edilmedi. {johansen_note} "
+                      "Seviye regresyonu sahte olabilir. Return modeli önerilir.")
+            notes.append("Eşbütünleşme: yok — Return modeli önerilir.")
 
     # ==============================================================
     # ADIM 10 — MODEL SONUÇLARI
@@ -650,7 +662,7 @@ if run and symbol:
         not non_normal or (johansen_ok and use_hac),   # Normallik → eşbütünleşme+HAC ile hafifletildi
         not nonlin,                                    # RESET — düzeltme yok, ya geçer ya geçmez
         not has_break,                                 # CUSUM — düzeltme yok, ya geçer ya geçmez
-        johansen_ok,                                   # Johansen — ya geçer ya geçmez
+        johansen_ok or not use_return,                 # Johansen — use_return=False ise zaten durağan, sorun yok
     ])
     total_steps = 9
 
