@@ -2,12 +2,12 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from io import BytesIO
 from scipy import stats
 from scipy.stats import zscore as scipy_zscore
 import plotly.graph_objects as go
+from sklearn.preprocessing import RobustScaler
 from statsmodels.stats.outliers_influence import variance_inflation_factor
-from statsmodels.tsa.stattools import adfuller, coint
+from statsmodels.tsa.stattools import adfuller
 from statsmodels.stats.diagnostic import acorr_ljungbox, het_arch, linear_reset, breaks_cusumolsresid
 from statsmodels.stats.stattools import jarque_bera
 from statsmodels.regression.linear_model import OLS
@@ -31,6 +31,62 @@ st.title("🧭 Regresyon Tanı Sihirbazı")
 st.caption("Adım adım regresyon varsayım kontrolü — her sorun tespit edilir, düzeltilir, sonuç raporlanır.")
 
 # ============================================================
+# clean_ohlcv — Hibrit Temizlik
+# ============================================================
+
+def clean_ohlcv(df):
+    """
+    Hibrit OHLCV temizliği:
+    1. High < Low → çıkar (imkânsız, kesin hata)
+    2. Close <= 0 veya Volume < 0 → çıkar (veri hatası)
+    3. OHLC tümü eşit + Volume=0 → çıkar (donuk fiyat)
+    4. Volume=0, fiyat hareket etmiş → Volume ffill
+    5. Tek izole NaN → ffill
+    6. 3+ ardışık NaN → çıkar
+    """
+    log = {}
+    n0  = len(df)
+
+    # 1. High < Low
+    mask = df["High"] < df["Low"]
+    log["High < Low (imkânsız)"] = int(mask.sum())
+    df = df[~mask].copy()
+
+    # 2. Negatif/sıfır fiyat veya negatif volume
+    mask2 = (df["Close"] <= 0) | (df["Volume"] < 0)
+    log["Close ≤ 0 veya Volume < 0"] = int(mask2.sum())
+    df = df[~mask2].copy()
+
+    # 3. OHLC tümü eşit + Volume=0 (donuk fiyat)
+    mask3 = (
+        (df["Open"]  == df["High"])  &
+        (df["High"]  == df["Low"])   &
+        (df["Low"]   == df["Close"]) &
+        (df["Volume"] == 0)
+    )
+    log["Donuk fiyat (OHLC eşit + Volume=0)"] = int(mask3.sum())
+    df = df[~mask3].copy()
+
+    # 4. Volume=0 ama fiyat hareket etmiş → Volume ffill
+    vol_zero = df["Volume"] == 0
+    log["Volume=0 (fiyat hareketli, ffill)"] = int(vol_zero.sum())
+    df.loc[vol_zero, "Volume"] = np.nan
+    df["Volume"] = df["Volume"].ffill()
+
+    # 5-6. NaN işlemi: 3+ ardışık → çıkar, izole → ffill
+    nan_mask = df[["Open","High","Low","Close","Volume"]].isnull().any(axis=1)
+    consec   = nan_mask.groupby((nan_mask != nan_mask.shift()).cumsum()).transform("sum")
+    long_nan = (nan_mask) & (consec >= 3)
+    log["3+ ardışık NaN (çıkarıldı)"] = int(long_nan.sum())
+    df = df[~long_nan].copy()
+    log["İzole NaN (ffill)"] = int(df[["Open","High","Low","Close","Volume"]].isnull().any(axis=1).sum())
+    df = df.ffill()
+
+    log["_n0"] = n0
+    log["_n1"] = len(df)
+    return df, log
+
+# ============================================================
 # İndikatör Fonksiyonları
 # ============================================================
 
@@ -38,18 +94,18 @@ def calc_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
 
 def calc_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
+    delta    = series.diff()
+    gain     = delta.where(delta > 0, 0.0)
+    loss     = -delta.where(delta < 0, 0.0)
     avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    rs = avg_gain / avg_loss
+    rs       = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 def calc_macd(series, fast=12, slow=26, signal=9):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
+    ema_fast    = series.ewm(span=fast, adjust=False).mean()
+    ema_slow    = series.ewm(span=slow, adjust=False).mean()
+    macd_line   = ema_fast - ema_slow
     signal_line = macd_line.ewm(span=signal, adjust=False).mean()
     return macd_line, signal_line, macd_line - signal_line
 
@@ -58,8 +114,8 @@ def calc_atr(high, low, close, period=14):
     return tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
 
 def calc_bollinger(close, period=20, std_dev=2):
-    sma = close.rolling(window=period).mean()
-    std = close.rolling(window=period).std()
+    sma      = close.rolling(window=period).mean()
+    std      = close.rolling(window=period).std()
     bb_upper = sma + std_dev * std
     bb_lower = sma - std_dev * std
     return bb_upper, bb_lower, (bb_upper - bb_lower) / sma
@@ -68,33 +124,33 @@ def calc_roc(close, period=10):
     return ((close - close.shift(period)) / close.shift(period)) * 100
 
 def calc_stochastic(high, low, close, k_period=14, d_period=3):
-    lowest_low = low.rolling(window=k_period).min()
+    lowest_low   = low.rolling(window=k_period).min()
     highest_high = high.rolling(window=k_period).max()
-    stoch_k = 100 * (close - lowest_low) / (highest_high - lowest_low)
-    stoch_d = stoch_k.rolling(window=d_period).mean()
+    stoch_k      = 100 * (close - lowest_low) / (highest_high - lowest_low)
+    stoch_d      = stoch_k.rolling(window=d_period).mean()
     return stoch_k, stoch_d
 
 def calc_adx(high, low, close, period=14):
-    tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
-    up_move = high - high.shift(1)
+    tr        = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
+    up_move   = high - high.shift(1)
     down_move = low.shift(1) - low
-    plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=close.index)
-    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=close.index)
-    atr_s = tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    plus_di = 100 * plus_dm.ewm(alpha=1/period, min_periods=period, adjust=False).mean() / atr_s
-    minus_di = 100 * minus_dm.ewm(alpha=1/period, min_periods=period, adjust=False).mean() / atr_s
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+    plus_dm   = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=close.index)
+    minus_dm  = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=close.index)
+    atr_s     = tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    plus_di   = 100 * plus_dm.ewm(alpha=1/period, min_periods=period, adjust=False).mean() / atr_s
+    minus_di  = 100 * minus_dm.ewm(alpha=1/period, min_periods=period, adjust=False).mean() / atr_s
+    dx        = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
     return dx.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
 
 def calc_williams_r(high, low, close, period=14):
     highest_high = high.rolling(window=period).max()
-    lowest_low = low.rolling(window=period).min()
+    lowest_low   = low.rolling(window=period).min()
     return -100 * (highest_high - close) / (highest_high - lowest_low)
 
 def calc_cci(high, low, close, period=20):
     typical_price = (high + low + close) / 3
-    sma_tp = typical_price.rolling(window=period).mean()
-    mean_dev = typical_price.rolling(window=period).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
+    sma_tp        = typical_price.rolling(window=period).mean()
+    mean_dev      = typical_price.rolling(window=period).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
     return (typical_price - sma_tp) / (0.015 * mean_dev)
 
 def calc_obv(close, volume):
@@ -110,13 +166,13 @@ def calc_volume_roc(volume, period=10):
     return ((volume - volume.shift(period)) / volume.shift(period)) * 100
 
 def calc_mfi(high, low, close, volume, period=14):
-    typical_price = (high + low + close) / 3
-    raw_money_flow = typical_price * volume
-    direction = typical_price.diff()
-    pos_mf = raw_money_flow.where(direction > 0, 0.0)
-    neg_mf = raw_money_flow.where(direction < 0, 0.0)
-    pos_sum = pos_mf.rolling(window=period).sum()
-    neg_sum = neg_mf.rolling(window=period).sum()
+    typical_price   = (high + low + close) / 3
+    raw_money_flow  = typical_price * volume
+    direction       = typical_price.diff()
+    pos_mf          = raw_money_flow.where(direction > 0, 0.0)
+    neg_mf          = raw_money_flow.where(direction < 0, 0.0)
+    pos_sum         = pos_mf.rolling(window=period).sum()
+    neg_sum         = neg_mf.rolling(window=period).sum()
     return 100 - (100 / (1 + pos_sum / neg_sum))
 
 def calc_amihud(close, volume):
@@ -125,59 +181,59 @@ def calc_amihud(close, volume):
 
 def calc_mec(close, window=63):
     # T = ret_long_period / ret_short_period = 30 / 5 = 6
-    T = 6
-    ret_long = np.log(close / close.shift(30))
+    T         = 6
+    ret_long  = np.log(close / close.shift(30))
     ret_short = np.log(close / close.shift(5))
-    var_long = ret_long.rolling(window=window).var()
+    var_long  = ret_long.rolling(window=window).var()
     var_short = ret_short.rolling(window=window).var()
     return var_long / (T * var_short)
 
 def calc_corwin_schultz(high, low):
-    sqrt2 = np.sqrt(2)
-    denom = 3 - 2 * sqrt2
-    log_hl = np.log(high / low)
-    log_hl2 = log_hl ** 2
+    sqrt2       = np.sqrt(2)
+    denom       = 3 - 2 * sqrt2
+    log_hl      = np.log(high / low)
+    log_hl2     = log_hl ** 2
     log_hl_prev = np.log(high.shift(1) / low.shift(1)) ** 2
-    beta = log_hl2 + log_hl_prev
-    h2 = pd.concat([high.shift(1), high], axis=1).max(axis=1)
-    l2 = pd.concat([low.shift(1), low], axis=1).min(axis=1)
-    gamma = np.log(h2 / l2) ** 2
-    alpha = (np.sqrt(2 * beta) - np.sqrt(beta)) / denom - np.sqrt(gamma / denom)
-    alpha = alpha.clip(lower=0)
+    beta        = log_hl2 + log_hl_prev
+    h2          = pd.concat([high.shift(1), high], axis=1).max(axis=1)
+    l2          = pd.concat([low.shift(1),  low],  axis=1).min(axis=1)
+    gamma       = np.log(h2 / l2) ** 2
+    alpha       = (np.sqrt(2 * beta) - np.sqrt(beta)) / denom - np.sqrt(gamma / denom)
+    alpha       = alpha.clip(lower=0)
     return 2 * (np.exp(alpha) - 1) / (1 + np.exp(alpha))
 
 def calc_stoch_rsi(close, rsi_period=14, stoch_period=14, k_smooth=3, d_smooth=3):
-    rsi = calc_rsi(close, rsi_period)
-    min_rsi = rsi.rolling(window=stoch_period).min()
-    max_rsi = rsi.rolling(window=stoch_period).max()
-    stoch_rsi = (rsi - min_rsi) / (max_rsi - min_rsi)
+    rsi         = calc_rsi(close, rsi_period)
+    min_rsi     = rsi.rolling(window=stoch_period).min()
+    max_rsi     = rsi.rolling(window=stoch_period).max()
+    stoch_rsi   = (rsi - min_rsi) / (max_rsi - min_rsi)
     stoch_rsi_k = stoch_rsi.rolling(window=k_smooth).mean() * 100
     stoch_rsi_d = stoch_rsi_k.rolling(window=d_smooth).mean()
     return stoch_rsi_k, stoch_rsi_d
 
 def build_indicators(df):
     c = df["Close"]; h = df["High"]; l = df["Low"]; v = df["Volume"]
-    df["EMA_20"] = calc_ema(c, 20)
-    df["EMA_50"] = calc_ema(c, 50)
-    df["EMA_200"] = calc_ema(c, 200)
-    df["RSI"] = calc_rsi(c)
-    df["MACD"] = calc_macd(c)[0]
-    df["ATR"] = calc_atr(h, l, c)
+    df["EMA_20"]      = calc_ema(c, 20)
+    df["EMA_50"]      = calc_ema(c, 50)
+    df["EMA_200"]     = calc_ema(c, 200)
+    df["RSI"]         = calc_rsi(c)
+    df["MACD"]        = calc_macd(c)[0]
+    df["ATR"]         = calc_atr(h, l, c)
     df["BB_Upper"], df["BB_Lower"], df["BBW"] = calc_bollinger(c)
-    df["Return"] = c.pct_change()
-    df["ROC"] = calc_roc(c)
-    df["Stoch_K"], df["Stoch_D"] = calc_stochastic(h, l, c)
-    df["ADX"] = calc_adx(h, l, c)
-    df["Williams_R"] = calc_williams_r(h, l, c)
-    df["CCI"] = calc_cci(h, l, c)
-    df["OBV"] = calc_obv(c, v)
-    df["CMF"] = calc_cmf(h, l, c, v)
-    df["Volume_ROC"] = calc_volume_roc(v)
-    df["MFI"] = calc_mfi(h, l, c, v)
+    df["Return"]      = c.pct_change()
+    df["ROC"]         = calc_roc(c)
+    df["Stoch_K"], df["Stoch_D"]     = calc_stochastic(h, l, c)
+    df["ADX"]         = calc_adx(h, l, c)
+    df["Williams_R"]  = calc_williams_r(h, l, c)
+    df["CCI"]         = calc_cci(h, l, c)
+    df["OBV"]         = calc_obv(c, v)
+    df["CMF"]         = calc_cmf(h, l, c, v)
+    df["Volume_ROC"]  = calc_volume_roc(v)
+    df["MFI"]         = calc_mfi(h, l, c, v)
     df["StochRSI_K"], df["StochRSI_D"] = calc_stoch_rsi(c)
-    df["Amihud"] = calc_amihud(c, v)
-    df["MEC"] = calc_mec(c)
-    df["CS_Spread"] = calc_corwin_schultz(h, l)
+    df["Amihud"]      = calc_amihud(c, v)
+    df["MEC"]         = calc_mec(c)
+    df["CS_Spread"]   = calc_corwin_schultz(h, l)
     df["Daily_Range"] = h - l
     return df
 
@@ -186,15 +242,15 @@ def build_indicators(df):
 # ============================================================
 
 def step_card(step_no, title, status, detail, fix=None):
-    """status: 'pass' | 'fail' | 'fix' | 'info'"""
-    icons = {"pass": "✅", "fail": "❌", "fix": "🔧", "info": "ℹ️"}
-    css   = {"pass": "step-pass", "fail": "step-fail", "fix": "step-fix", "info": "step-info"}
-    icon  = icons.get(status, "")
-    cls   = css.get(status, "step-info")
+    icons    = {"pass": "✅", "fail": "❌", "fix": "🔧", "info": "ℹ️"}
+    css      = {"pass": "step-pass", "fail": "step-fail", "fix": "step-fix", "info": "step-info"}
+    icon     = icons.get(status, "")
+    cls      = css.get(status, "step-info")
     fix_html = f"<br><b>Uygulanan düzeltme:</b> {fix}" if fix else ""
+    label    = f"Adım {step_no} — " if step_no else ""
     st.markdown(f"""
     <div class="step-box {cls}">
-        <b>{icon} Adım {step_no} — {title}</b><br>
+        <b>{icon} {label}{title}</b><br>
         {detail}{fix_html}
     </div>
     """, unsafe_allow_html=True)
@@ -231,16 +287,22 @@ with col_btn1:
 with col_btn2:
     run = st.button("▶ Sihirbazı Başlat", type="primary", use_container_width=True)
 
+# ============================================================
+# Veri Aralığı Butonu — İndir + Temizle + Raporla
+# ============================================================
+
 if check_range and symbol:
-    with st.spinner("Veri aralığı sorgulanıyor..."):
+    with st.spinner("Veri indiriliyor ve temizleniyor..."):
         try:
             _ticker = yf.Ticker(symbol)
             _hist   = _ticker.history(period="max", interval="1d", actions=False)
             if _hist.index.tz is not None:
                 _hist.index = _hist.index.tz_localize(None)
+
             if _hist.empty:
                 st.warning("Veri bulunamadı. Sembolü kontrol edin.")
             else:
+                # Tüm mevcut aralık bilgisi
                 _start = _hist.index.min().date()
                 _end   = _hist.index.max().date()
                 _days  = len(_hist)
@@ -249,90 +311,118 @@ if check_range and symbol:
                     f"En eski: `{_start}` · En yeni: `{_end}` · Toplam: `{_days:,}` gün"
                 )
 
-                # ── Veri Kalitesi Tanısı ──────────────────────────
-                _n_raw        = len(_hist)
-                _n_ohlc_all   = int(((_hist["Open"]==_hist["High"]) & (_hist["High"]==_hist["Low"]) & (_hist["Low"]==_hist["Close"])).sum()) if all(c in _hist.columns for c in ["Open","High","Low","Close"]) else 0
-                _n_zero_range = int((_hist["High"]==_hist["Low"]).sum()) if all(c in _hist.columns for c in ["High","Low"]) else 0
-                _n_zero_vol   = int((_hist["Volume"]==0).sum()) if "Volume" in _hist.columns else 0
-                _n_nan        = int(_hist[["Open","High","Low","Close","Volume"]].isnull().any(axis=1).sum()) if all(c in _hist.columns for c in ["Open","High","Low","Close","Volume"]) else 0
-                _n_usable     = _n_raw - _n_ohlc_all
+                # Seçilen aralığa filtrele
+                mask = (_hist.index.date >= start_date) & (_hist.index.date <= end_date)
+                _sub = _hist.loc[mask].copy()
 
-                diag_rows = [
-                    {"Kontrol": "Ham veri (tüm tarihler)",        "Satır": f"{_n_raw:,}",        "Durum": "ℹ️"},
-                    {"Kontrol": "OHLC tümü eşit (donuk fiyat)",   "Satır": f"{_n_ohlc_all:,}",   "Durum": "✅ Temiz" if _n_ohlc_all == 0 else "⚠️ Çıkarılacak"},
-                    {"Kontrol": "High = Low (sıfır range)",        "Satır": f"{_n_zero_range:,}", "Durum": "✅ Temiz" if _n_zero_range == 0 else "⚠️ ATR/CS_Spread/BBW bozulabilir"},
-                    {"Kontrol": "Volume = 0",                      "Satır": f"{_n_zero_vol:,}",   "Durum": "✅ Temiz" if _n_zero_vol == 0 else "⚠️ Amihud/CMF/MFI bozulabilir"},
-                    {"Kontrol": "Boş hücre (herhangi bir OHLCV)",  "Satır": f"{_n_nan:,}",        "Durum": "✅ Temiz" if _n_nan == 0 else "⚠️ dropna ile düşer"},
-                    {"Kontrol": "Tahmini kullanılabilir satır",    "Satır": f"{_n_usable:,}",     "Durum": "ℹ️"},
-                ]
-                diag_df = pd.DataFrame(diag_rows)
+                if _sub.empty:
+                    st.error("Seçilen tarih aralığında veri bulunamadı.")
+                else:
+                    # ── Temizlik öncesi tanı ──────────────────────────
+                    _n_raw        = len(_sub)
+                    _n_ohlc_all   = int(((_sub["Open"]==_sub["High"]) & (_sub["High"]==_sub["Low"]) & (_sub["Low"]==_sub["Close"]) & (_sub["Volume"]==0)).sum())
+                    _n_zero_range = int((_sub["High"]==_sub["Low"]).sum())
+                    _n_zero_vol   = int((_sub["Volume"]==0).sum())
+                    _n_nan        = int(_sub[["Open","High","Low","Close","Volume"]].isnull().any(axis=1).sum())
+                    _ret          = _sub["Close"].pct_change().dropna()
+                    _outlier_thr  = 0.20
+                    _outliers     = _ret[_ret.abs() > _outlier_thr]
 
-                def _dq(val):
-                    if not isinstance(val, str): return ""
-                    if val.startswith("✅"): return "background-color:#d1e7dd; color:#0a3622"
-                    if val.startswith("⚠️"): return "background-color:#fff3cd; color:#664d03"
-                    return ""
+                    st.markdown("**🔍 Temizlik Öncesi Veri Kalitesi**")
+                    diag_rows = [
+                        {"Kontrol": "Ham veri (seçilen aralık)",         "Satır": f"{_n_raw:,}",        "Durum": "ℹ️"},
+                        {"Kontrol": "Donuk fiyat (OHLC eşit+Vol=0)",     "Satır": f"{_n_ohlc_all:,}",   "Durum": "✅ Temiz" if _n_ohlc_all==0   else "⚠️ Çıkarılacak"},
+                        {"Kontrol": "High = Low (sıfır range)",           "Satır": f"{_n_zero_range:,}", "Durum": "✅ Temiz" if _n_zero_range==0 else "⚠️ Range indikatörleri bozulabilir"},
+                        {"Kontrol": "Volume = 0",                         "Satır": f"{_n_zero_vol:,}",   "Durum": "✅ Temiz" if _n_zero_vol==0   else "⚠️ ffill uygulanacak"},
+                        {"Kontrol": "Boş hücre (OHLCV)",                  "Satır": f"{_n_nan:,}",        "Durum": "✅ Temiz" if _n_nan==0        else "⚠️ ffill/çıkar"},
+                        {"Kontrol": f"|Return| > %{int(_outlier_thr*100)} (aykırı değer)", "Satır": f"{len(_outliers):,}", "Durum": "✅ Yok" if len(_outliers)==0 else "ℹ️ Raporlandı, dokunulmadı"},
+                    ]
+                    diag_df = pd.DataFrame(diag_rows)
+                    def _dq(val):
+                        if not isinstance(val, str): return ""
+                        if val.startswith("✅"): return "background-color:#d1e7dd; color:#0a3622"
+                        if val.startswith("⚠️"): return "background-color:#fff3cd; color:#664d03"
+                        return ""
+                    st.dataframe(diag_df.style.map(_dq, subset=["Durum"]), use_container_width=True, hide_index=True)
 
-                st.markdown("**🔍 Veri Kalitesi Tanısı**")
-                st.dataframe(
-                    diag_df.style.map(_dq, subset=["Durum"]),
-                    use_container_width=True, hide_index=True
-                )
+                    # Aykırı değer detayı
+                    if len(_outliers) > 0:
+                        with st.expander(f"⚠️ Aykırı Değerler — {len(_outliers)} gün (|Return| > %{int(_outlier_thr*100)})"):
+                            _out_df = pd.DataFrame({
+                                "Tarih":    _outliers.index.date,
+                                "Return%":  (_outliers * 100).round(2),
+                            }).reset_index(drop=True)
+                            st.dataframe(_out_df, use_container_width=True, hide_index=True)
+                            st.caption("Kriz dönemlerine ait gerçek sinyaller olabilir — winsorize uygulanmadı.")
 
-                if _n_zero_range > 0:
-                    st.warning(f"⚠️ {_n_zero_range:,} gün High=Low — range-based indikatörler (ATR, CS_Spread, BBW, Daily_Range) bu günlerde 0 üretir. Regresyona girmeden önce VIF/Spearman filtresi bunları elemelidir.")
-                if _n_zero_vol > 0:
-                    st.warning(f"⚠️ {_n_zero_vol:,} gün Volume=0 — Amihud, CMF, MFI bu günlerde NaN/Inf üretir. dropna ile örneklemden düşer.")
+                    # ── clean_ohlcv uygula ──────────────────────────
+                    _clean, _log = clean_ohlcv(_sub)
+
+                    st.markdown("**🧹 Temizlik Sonucu**")
+                    clean_rows = []
+                    for k, v_log in _log.items():
+                        if k.startswith("_"): continue
+                        clean_rows.append({"İşlem": k, "Etkilenen Satır": f"{v_log:,}"})
+                    clean_rows.append({"İşlem": "Temizlik öncesi",                    "Etkilenen Satır": f"{_log['_n0']:,}"})
+                    clean_rows.append({"İşlem": "✅ Temizlik sonrası (kullanılacak)", "Etkilenen Satır": f"{_log['_n1']:,}"})
+                    st.dataframe(pd.DataFrame(clean_rows), use_container_width=True, hide_index=True)
+
+                    # session_state'e kaydet
+                    st.session_state["clean_df"]    = _clean
+                    st.session_state["clean_sym"]   = symbol.upper()
+                    st.session_state["clean_start"] = start_date
+                    st.session_state["clean_end"]   = end_date
+                    st.success(f"✅ Temizlenmiş veri hafızaya alındı — {_log['_n1']:,} satır. Sihirbazı başlatabilirsiniz.")
 
         except Exception as e:
             st.error(f"Sorgu hatası: {e}")
+
 elif check_range and not symbol:
     st.warning("Lütfen önce sembol girin.")
 
+# ============================================================
+# Sihirbaz
+# ============================================================
+
 if run and symbol:
+
+    # Veri Aralığı butonu basılmadan sihirbaz çalışmasın
+    if "clean_df" not in st.session_state or st.session_state.get("clean_sym") != symbol.upper():
+        st.error("⛔ Önce '📅 Veri Aralığı' butonuna basarak veriyi temizleyin.")
+        st.stop()
+
+    df   = st.session_state["clean_df"].copy()
+    mask = (df.index.date >= start_date) & (df.index.date <= end_date)
+    df   = df.loc[mask].copy()
+    if df.empty:
+        st.error("Seçilen tarih aralığında temizlenmiş veri bulunamadı.")
+        st.stop()
+
     st.divider()
     st.subheader(f"📋 {symbol.upper()} — Tanı Raporu")
-
-    # ── Veri yükle ───────────────────────────────────────────
-    with st.spinner("Veri indiriliyor..."):
-        try:
-            ticker   = yf.Ticker(symbol)
-            is_intra = False
-            hist     = ticker.history(period="max", interval="1d", actions=False)
-            if hist.index.tz is not None:
-                hist.index = hist.index.tz_localize(None)
-
-            # Sembolün tüm mevcut veri aralığını göster
-            if not hist.empty:
-                avail_start = hist.index.min().date()
-                avail_end   = hist.index.max().date()
-                avail_days  = len(hist)
-                st.info(
-                    f"📅 **{symbol.upper()} mevcut veri aralığı** — "
-                    f"En eski: `{avail_start}` · En yeni: `{avail_end}` · "
-                    f"Toplam: `{avail_days:,}` gün   "
-                    f"_(Seçilen aralık: {start_date} → {end_date})_"
-                )
-
-            mask = (hist.index.date >= start_date) & (hist.index.date <= end_date)
-            df   = hist.loc[mask].copy()
-            if df.empty:
-                st.error("Seçilen tarih aralığında veri bulunamadı.")
-                st.stop()
-            df = build_indicators(df)
-            ohlc_mask = ~((df["Open"]==df["High"])&(df["High"]==df["Low"])&(df["Low"]==df["Close"]))
-            df = df[ohlc_mask].dropna().copy()
-        except Exception as e:
-            st.error(f"Veri hatası: {e}")
-            st.stop()
+    st.info(
+        f"📅 **{symbol.upper()}** — "
+        f"Kullanılan: `{len(df):,}` gün   "
+        f"_(Seçilen aralık: {start_date} → {end_date})_"
+    )
 
     if target not in df.columns:
         st.error(f"'{target}' sütunu veri setinde yok.")
         st.stop()
 
-    notes      = []   # Rapor için notlar
-    applied    = []   # Uygulanan düzeltmeler
-    step       = 0
+    # ── build_indicators ─────────────────────────────────────
+    with st.spinner("İndikatörler hesaplanıyor..."):
+        df = build_indicators(df)
+        ohlc_mask = ~((df["Open"]==df["High"])&(df["High"]==df["Low"])&(df["Low"]==df["Close"]))
+        df = df[ohlc_mask].dropna().copy()
+
+    if target not in df.columns:
+        st.error(f"'{target}' sütunu indikatör hesabı sonrası bulunamadı.")
+        st.stop()
+
+    notes   = []
+    applied = []
+    step    = 0
 
     candidates = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != target]
     sub        = df[candidates + [target]].dropna()
@@ -342,7 +432,7 @@ if run and symbol:
     # ==============================================================
     step += 1
     n_tests        = len(candidates)
-    bonferroni_thr = corr_low / n_tests  # Bonferroni: α / n
+    bonferroni_thr = corr_low / n_tests
     corr_vals      = sub[candidates].apply(lambda col: stats.spearmanr(col, sub[target])[0]).abs()
     low_list       = corr_vals[corr_vals < bonferroni_thr].index.tolist()
     fm             = sub[candidates].corr(method="spearman").abs()
@@ -351,14 +441,13 @@ if run and symbol:
     for col in upper.columns:
         partners = upper.index[upper[col] > corr_high].tolist()
         for p in partners:
-            drop = p if corr_vals.get(p,0) <= corr_vals.get(col,0) else col
+            drop = p if corr_vals.get(p, 0) <= corr_vals.get(col, 0) else col
             if drop not in high_list and drop not in low_list:
                 high_list.append(drop)
     corr_remove = list(set(low_list + high_list))
     after_corr  = [f for f in candidates if f not in corr_remove]
 
     bonferroni_info = f"Bonferroni düzeltmesi: eşik = {corr_low:.2f} / {n_tests} = {bonferroni_thr:.4f}"
-
     if corr_remove:
         step_card(step, "Spearman Korelasyon", "fix",
                   f"{len(candidates)} feature test edildi. {bonferroni_info}. "
@@ -367,7 +456,7 @@ if run and symbol:
         notes.append(f"Spearman filtresi (Bonferroni): {len(corr_remove)} feature çıkarıldı. Eşik={bonferroni_thr:.4f}")
     else:
         step_card(step, "Spearman Korelasyon", "pass",
-                  f"{len(candidates)} feature test edildi. {bonferroni_info}. Düşük korelasyon veya multicollinearity tespit edilmedi.")
+                  f"{len(candidates)} feature test edildi. {bonferroni_info}. Sorun yok.")
         notes.append(f"Spearman filtresi (Bonferroni): tüm feature'lar geçti. Eşik={bonferroni_thr:.4f}")
 
     # ==============================================================
@@ -402,35 +491,51 @@ if run and symbol:
         notes.append("VIF: tüm feature'lar eşik altında.")
 
     # ==============================================================
+    # RobustScaler — Spearman+VIF sonrası, ADF öncesi
+    # Farklı skalalı feature'ların ADF ve OLS üzerindeki
+    # sayısal etkisini gidermek için uygulanır.
+    # ==============================================================
+    working_raw           = df[after_vif + [target]].dropna().copy()
+    scaler                = RobustScaler()
+    working_raw[after_vif] = scaler.fit_transform(working_raw[after_vif])
+    sub = working_raw
+
+    step_card(0, "RobustScaler Uygulandı", "fix",
+              f"Spearman + VIF sonrası kalan {len(after_vif)} feature RobustScaler ile ölçeklendi (medyan=0, IQR=1). "
+              f"Target ('{target}') ölçeklenmedi.",
+              "Farklı skalalı feature'ların (Amihud, Williams_R vb.) ADF ve OLS üzerindeki sayısal etkisi giderildi.")
+    applied.append("RobustScaler (feature'lar)")
+    notes.append(f"RobustScaler: {len(after_vif)} feature ölçeklendi.")
+
+    # ==============================================================
     # ADIM 3 — ADF (Durağanlık)
     # ==============================================================
     step += 1
-    non_stat_feats = []
+    non_stat_feats    = []
     target_stationary = True
-    adf_rows = []
+    adf_rows          = []
 
     for col in after_vif + [target]:
-        series = df[col].dropna()
+        series = sub[col].dropna()
         try:
             stat, pval, _, _, crit, _ = adfuller(series, autolag="AIC")
             stationary = pval < 0.05
             if not stationary:
                 if col == target: target_stationary = False
                 else: non_stat_feats.append(col)
-            adf_rows.append({"Feature": col, "p-değeri": round(pval,4),
+            adf_rows.append({"Feature": col, "p-değeri": round(pval, 4),
                              "Durum": "✅ Durağan" if stationary else "❌ Durağan Değil"})
         except:
             adf_rows.append({"Feature": col, "p-değeri": np.nan, "Durum": "⚠️ Hata"})
 
-    adf_df = pd.DataFrame(adf_rows)
-
+    adf_df     = pd.DataFrame(adf_rows)
     use_return = False
     if not target_stationary or non_stat_feats:
         step_card(step, "ADF — Durağanlık", "fix",
                   f"Durağan olmayan: Target={'❌' if not target_stationary else '✅'}, Feature'lar: {non_stat_feats if non_stat_feats else 'Yok'}.",
                   "Target → pct_change() (Return). Durağan olmayan feature'lar → pct_change().")
         use_return = True
-        notes.append(f"ADF: durağanlık sorunu → Return dönüşümü uygulandı.")
+        notes.append("ADF: durağanlık sorunu → Return dönüşümü uygulandı.")
         applied.append("Return dönüşümü")
     else:
         step_card(step, "ADF — Durağanlık", "pass",
@@ -446,7 +551,7 @@ if run and symbol:
         st.dataframe(adf_df.style.map(_adf_c, subset=["Durum"]), use_container_width=True, hide_index=True)
 
     # Veriyi hazırla
-    working = df[after_vif + [target]].dropna().copy()
+    working = sub[after_vif + [target]].dropna().copy()
     if use_return:
         working[target] = working[target].pct_change()
         for col in non_stat_feats:
@@ -456,7 +561,6 @@ if run and symbol:
     y = working[target].values
     X = add_constant(working[after_vif].values.astype(float))
 
-    # OLS fit (başlangıç)
     try:
         ols_base = OLS(y, X).fit()
     except Exception as e:
@@ -476,7 +580,6 @@ if run and symbol:
     except:
         lb_p = np.nan; has_ac = False
 
-    # Kart — HAC kararı henüz verilmedi, sadece tespit göster
     if has_ac:
         step_card(step, "Ljung-Box — Otokorelasyon", "fix",
                   f"p = {lb_p:.4f} < 0.05 — artıklarda otokorelasyon var.",
@@ -489,7 +592,7 @@ if run and symbol:
 
     # ==============================================================
     # ADIM 5 — ARCH (Heteroskedasticity)
-    # — Ham artıklar üzerinde test et, HAC kararından bağımsız
+    # Ham artıklar üzerinde test et, HAC kararından bağımsız
     # ==============================================================
     step += 1
     try:
@@ -512,7 +615,7 @@ if run and symbol:
     use_hac = has_ac or has_arch
     try:
         if use_hac:
-            ols_fit = OLS(y, X).fit(cov_type="HAC", cov_kwds={"maxlags": 5})
+            ols_fit    = OLS(y, X).fit(cov_type="HAC", cov_kwds={"maxlags": 5})
             hac_reason = []
             if has_ac:   hac_reason.append("otokorelasyon")
             if has_arch: hac_reason.append("ARCH etkisi")
@@ -529,7 +632,7 @@ if run and symbol:
         ols_fit = ols_base
 
     # ==============================================================
-    # ADIM 6 — Normallik (Jarque-Bera) — artıklara
+    # ADIM 6 — Normallik (Jarque-Bera)
     # ==============================================================
     step += 1
     try:
@@ -545,7 +648,8 @@ if run and symbol:
                       "Eşbütünleşme mevcut ve HAC uygulandıysa CLT geçerli — normallik varsayımı hafifletilebilir.")
         else:
             step_card(step, "Jarque-Bera — Normallik", "fail",
-                      f"p = {jb_p:.4f} — artıklar normal dağılmıyor (Çarpıklık={jb_skew:.2f}, Basıklık={jb_kurt:.2f}). Durağan serilerde CLT geçerli ise kabul edilebilir.")
+                      f"p = {jb_p:.4f} — artıklar normal dağılmıyor (Çarpıklık={jb_skew:.2f}, Basıklık={jb_kurt:.2f}). "
+                      "Durağan serilerde CLT geçerli ise kabul edilebilir.")
         notes.append(f"Normallik: sağlanmıyor (çarpıklık={jb_skew:.2f}).")
     else:
         step_card(step, "Jarque-Bera — Normallik", "pass",
@@ -566,9 +670,7 @@ if run and symbol:
     if nonlin:
         step_card(step, "RESET — Doğrusallık", "info",
                   f"p = {rst_p:.4f} < 0.05 — doğrusal olmayan ilişki tespit edildi. "
-                  "Finansal serilerde beklenen bir sonuç. "
-                  "Katsayılar yaklaşık yorumlanmalıdır. "
-                  "Rejim değişikliği şüphesi varsa TAR/Markov Switching düşünülebilir.")
+                  "Finansal serilerde beklenen bir sonuç. Katsayılar yaklaşık yorumlanmalıdır.")
         notes.append("Doğrusallık: sağlanmıyor — katsayılar yaklaşık.")
     else:
         step_card(step, "RESET — Doğrusallık", "pass",
@@ -588,9 +690,7 @@ if run and symbol:
     if has_break:
         step_card(step, "CUSUM — Yapısal Kırılma", "info",
                   f"p = {cusum_p:.4f} < 0.05 — katsayılar zaman içinde değişiyor. "
-                  "Tüm dönem için tek model varsayımı zayıflar. "
-                  "Alt dönemlere bölme veya rolling window önerilir. "
-                  "Akademik sunumda 'ortalama ilişki' olarak raporlanabilir.")
+                  "Alt dönemlere bölme veya rolling window önerilir.")
         notes.append("Yapısal kırılma: var — rolling window önerilir.")
     else:
         step_card(step, "CUSUM — Yapısal Kırılma", "pass",
@@ -599,24 +699,20 @@ if run and symbol:
 
     # ==============================================================
     # ADIM 9 — Eşbütünleşme (Johansen)
+    # Yalnızca use_return=True ise (seriler I(1)) anlamlıdır.
+    # Ham (level) df ile çalışır — ölçeklenmiş sub değil.
     # ==============================================================
     step += 1
     johansen_n    = 0
     johansen_ok   = False
     johansen_note = ""
 
-    # Johansen testi yalnızca seriler durağan DEĞİLSE anlamlıdır.
-    # use_return=True → ADF durağan olmayan seri tespit etti → level veriyle Johansen geçerli.
-    # use_return=False → tüm seriler zaten durağan → eşbütünleşme testi uygulanamaz,
-    #   durağan seriler üzerinde Johansen çalıştırmak anlamsız sonuç üretir.
     if not use_return:
         step_card(step, "Johansen — Eşbütünleşme", "info",
                   "Tüm seriler ADF testinde durağan bulundu. "
-                  "Eşbütünleşme testi yalnızca I(1) (durağan olmayan) seriler için geçerlidir — atlandı.")
-        notes.append("Johansen: seriler durağan → test uygulanamaz, atlandı.")
+                  "Eşbütünleşme testi yalnızca I(1) seriler için geçerlidir — atlandı.")
+        notes.append("Johansen: seriler durağan → test atlandı.")
     else:
-        # Johansen seviye (level) verisiyle çalışır.
-        # use_return=True ise seriler durağan değildi → ham df doğru girdi.
         try:
             cols_j = after_vif + [target]
             data_j = df[cols_j].dropna().values.astype(float)
@@ -627,7 +723,6 @@ if run and symbol:
             johansen_ok   = johansen_n > 0
             johansen_note = "Ham (level) veri kullanıldı."
         except Exception:
-            # Ham veri matris hatasına yol açtıysa z-score ile tekrar dene
             try:
                 data_jz = scipy_zscore(data_j, axis=0)
                 res_j   = coint_johansen(data_jz, det_order=0, k_ar_diff=1)
@@ -635,7 +730,7 @@ if run and symbol:
                     if res_j.lr1[i] is not None and res_j.lr1[i] > res_j.cvt[i, 1]:
                         johansen_n += 1
                 johansen_ok   = johansen_n > 0
-                johansen_note = "⚠️ Ham veri matris hatasına yol açtı — z-score ile tekrar çalıştırıldı. Sonuçlar gösterge niteliğindedir."
+                johansen_note = "⚠️ Ham veri matris hatasına yol açtı — z-score ile tekrar çalıştırıldı."
             except Exception:
                 johansen_n = -1
 
@@ -645,14 +740,11 @@ if run and symbol:
             notes.append("Johansen: hata.")
         elif johansen_ok:
             step_card(step, "Johansen — Eşbütünleşme", "pass",
-                      f"{johansen_n} eşbütünleşme ilişkisi tespit edildi. "
-                      "Feature'lar ve target arasında uzun vadeli gerçek ilişki var. "
-                      f"OLS katsayıları güvenilir — sahte regresyon değil. {johansen_note}")
-            notes.append(f"Eşbütünleşme: {johansen_n} ilişki — OLS güvenilir. {johansen_note}")
+                      f"{johansen_n} eşbütünleşme ilişkisi tespit edildi. OLS katsayıları güvenilir. {johansen_note}")
+            notes.append(f"Eşbütünleşme: {johansen_n} ilişki — OLS güvenilir.")
         else:
             step_card(step, "Johansen — Eşbütünleşme", "fail",
-                      f"Eşbütünleşme tespit edilmedi. {johansen_note} "
-                      "Seviye regresyonu sahte olabilir. Return modeli önerilir.")
+                      f"Eşbütünleşme tespit edilmedi. {johansen_note} Seviye regresyonu sahte olabilir.")
             notes.append("Eşbütünleşme: yok — Return modeli önerilir.")
 
     # ==============================================================
@@ -663,8 +755,8 @@ if run and symbol:
     st.subheader(f"🏁 Adım {step} — Final Model Sonuçları")
 
     model_name = "OLS + HAC (Newey-West)" if use_hac else "OLS"
-    if use_return:
-        model_name += " + Return"
+    if use_return: model_name += " + Return"
+    model_name += " + RobustScaler"
     st.caption(f"Uygulanan model: **{model_name}** | Feature sayısı: {len(after_vif)}")
 
     col_a, col_b, col_c, col_d = st.columns(4)
@@ -677,10 +769,9 @@ if run and symbol:
     col_e.metric("F-istatistiği", f"{ols_fit.fvalue:.4f}")
     col_f.metric("F p-değeri",    f"{ols_fit.f_pvalue:.4f}")
 
-    # Katsayılar tablosu
     st.markdown("**Katsayılar**")
     feature_names = ["const"] + after_vif
-    coef_rows = []
+    coef_rows     = []
     for i, fname in enumerate(feature_names):
         if fname == "const": continue
         pval = ols_fit.pvalues[i]
@@ -714,7 +805,6 @@ if run and symbol:
     if sig_f:   st.success(f"Anlamlı feature'lar: `{'`, `'.join(sig_f)}`")
     if insig_f: st.warning(f"Anlamsız feature'lar: `{'`, `'.join(insig_f)}` — modelden çıkarılabilir")
 
-    # Artık grafiği
     st.markdown("**Artık Grafiği**")
     fig_r = go.Figure()
     fig_r.add_trace(go.Scatter(x=list(range(len(resid))), y=resid, mode="lines",
@@ -724,7 +814,6 @@ if run and symbol:
                         xaxis_title="Gözlem", yaxis_title="Artık", hovermode="x unified")
     st.plotly_chart(fig_r, use_container_width=True)
 
-    # Q-Q Plot
     st.markdown("**Q-Q Plot**")
     (osm, osr), (slope, intercept, _) = stats.probplot(resid)
     fig_qq = go.Figure()
@@ -743,15 +832,15 @@ if run and symbol:
     st.subheader("📄 Özet Rapor")
 
     passed_count = sum([
-        True,                                          # Spearman her zaman çözüm üretir
-        True,                                          # VIF iterative her zaman çözüm üretir
-        True,                                          # ADF → Return uygulandı, çözüldü
-        True,                                          # Otokorelasyon → HAC uygulandı, çözüldü
-        not has_arch or use_hac,                       # ARCH → HAC varsa yönetildi
-        not non_normal or (johansen_ok and use_hac),   # Normallik → eşbütünleşme+HAC ile hafifletildi
-        not nonlin,                                    # RESET — düzeltme yok, ya geçer ya geçmez
-        not has_break,                                 # CUSUM — düzeltme yok, ya geçer ya geçmez
-        johansen_ok or not use_return,                 # Johansen — use_return=False ise zaten durağan, sorun yok
+        True,                                        # Spearman
+        True,                                        # VIF
+        True,                                        # ADF
+        True,                                        # Ljung-Box
+        not has_arch or use_hac,                     # ARCH
+        not non_normal or (johansen_ok and use_hac), # Normallik
+        not nonlin,                                  # RESET
+        not has_break,                               # CUSUM
+        johansen_ok or not use_return,               # Johansen
     ])
     total_steps = 9
 
@@ -764,8 +853,7 @@ if run and symbol:
 
     st.markdown("**Uygulanan düzeltmeler:**")
     if applied:
-        for a in applied:
-            st.markdown(f"- {a}")
+        for a in applied: st.markdown(f"- {a}")
     else:
         st.markdown("- Düzeltme gerekmedi.")
 
@@ -773,7 +861,6 @@ if run and symbol:
     for i, note in enumerate(notes, 1):
         st.markdown(f"{i}. {note}")
 
-    # Akademik not
     with st.expander("📝 Akademik Metodoloji Notu"):
         hac_note    = "Otokorelasyon ve heteroskedasticity için HAC standart hatalar (Newey-West, 1987) uygulanmıştır. " if use_hac else ""
         return_note = "Durağanlık sağlamak amacıyla bağımlı ve durağan olmayan bağımsız değişkenler için yüzdesel getiri dönüşümü uygulanmıştır. " if use_return else ""
@@ -783,11 +870,13 @@ if run and symbol:
 
         st.markdown(f"""
 Bu çalışmada {symbol.upper()} için {start_date} — {end_date} dönemine ait günlük veri kullanılmıştır.
+Ham OHLCV verisi regresyon öncesinde hibrit temizlik prosedüründen geçirilmiştir (imkânsız değerler çıkarılmış, izole eksik veriler ileri taşıma yöntemiyle doldurulmuştur).
 Çoklu doğrusallık Variance Inflation Factor (VIF > {vif_thr}) ile kontrol edilmiş, yüksek VIF değerine sahip değişkenler iteratif olarak çıkarılmıştır.
 Çoklu test sorununun yalancı anlamlılık riskini azaltmak amacıyla Spearman korelasyon eşiğine Bonferroni düzeltmesi uygulanmıştır.
+Farklı skalalı değişkenlerin sayısal kararlılığını sağlamak amacıyla Spearman ve VIF filtresi sonrası kalan feature'lara RobustScaler uygulanmıştır.
 Durağanlık Augmented Dickey-Fuller (ADF) testi ile sınanmıştır.
 {return_note}{hac_note}{coint_note}{reset_note}{cusum_note}
 Final modelde {len(sig_f)} değişken istatistiksel olarak anlamlı bulunmuştur (p < 0.05): {', '.join(sig_f) if sig_f else 'Yok'}.
 
-**Sınırlılıklar:** Bağımsız değişkenlerin büyük bölümü hedef değişkenden (kapanış fiyatı) türetilmiş teknik indikatörlerdir. Bu durum içsellik (endogeneity) sorununa yol açabilir ve OLS katsayılarının yanlı olmasına neden olabilir. Araç değişken (IV) tahmini için uygun enstrüman bulunamamıştır. Bu nedenle bulgular nedensellik değil, korelasyon ilişkisi olarak yorumlanmalıdır.
+**Sınırlılıklar:** Bağımsız değişkenlerin büyük bölümü hedef değişkenden türetilmiş teknik indikatörlerdir. İçsellik (endogeneity) riski nedeniyle bulgular nedensellik değil, korelasyon ilişkisi olarak yorumlanmalıdır.
         """)
