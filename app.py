@@ -227,58 +227,31 @@ with col5:
 
 col_btn1, col_btn2 = st.columns([1, 3])
 with col_btn1:
-    show_method = st.button("📖 Metodoloji", use_container_width=True)
+    check_range = st.button("📅 Veri Aralığı", use_container_width=True)
 with col_btn2:
     run = st.button("▶ Sihirbazı Başlat", type="primary", use_container_width=True)
 
-if show_method:
-    st.markdown("""
-    <div class="step-box step-info">
-    <b>ℹ️ Sihirbaz Metodolojisi — 9 Adım</b><br><br>
-
-    <b>Adım 1 — Spearman Korelasyon (Bonferroni düzeltmeli)</b><br>
-    Her feature'ın hedef değişkenle Spearman korelasyonu hesaplanır.
-    Çoklu test yanlılığını önlemek için eşik Bonferroni yöntemiyle α/n'ye indirilir.
-    Düşük korelasyonlu ve çapraz korelasyonu yüksek feature'lar çıkarılır.<br><br>
-
-    <b>Adım 2 — VIF (Iteratif)</b><br>
-    Variance Inflation Factor ile çoklu doğrusallık tespit edilir.
-    En yüksek VIF değerine sahip feature iteratif olarak çıkarılır; tüm feature'lar eşik altına inene dek tekrarlanır.<br><br>
-
-    <b>Adım 3 — ADF Durağanlık Testi</b><br>
-    Augmented Dickey-Fuller testi ile her seri durağanlık açısından sınanır.
-    Durağan olmayan seriler için pct_change() (yüzdesel getiri) dönüşümü uygulanır.<br><br>
-
-    <b>Adım 4 — Ljung-Box Otokorelasyon Testi</b><br>
-    OLS artıklarında otokorelasyon araştırılır. Tespit edilirse HAC tetiklenir.<br><br>
-
-    <b>Adım 5 — ARCH Heteroskedasticity Testi</b><br>
-    Volatilite kümelenmesi (ARCH etkisi) test edilir. Tespit edilirse HAC tetiklenir.
-    HAC (Newey-West), standart hataları hem otokorelasyon hem heteroskedasticity için düzeltir;
-    katsayı verimliliği için GARCH önerilir.<br><br>
-
-    <b>Adım 6 — Jarque-Bera Normallik Testi</b><br>
-    Artıkların normal dağılıp dağılmadığı sınanır. Büyük örneklemlerde CLT sayesinde normallik
-    zorunlu değildir; eşbütünleşme + HAC varlığında hafifletilebilir.<br><br>
-
-    <b>Adım 7 — RESET Doğrusallık Testi</b><br>
-    Ramsey RESET testi ile modelin doğrusal olup olmadığı kontrol edilir.
-    Finansal serilerde doğrusal olmayan ilişki sık görülür; katsayılar yaklaşık yorumlanmalıdır.<br><br>
-
-    <b>Adım 8 — CUSUM Yapısal Kırılma Testi</b><br>
-    Katsayıların zaman içinde stabil kalıp kalmadığı test edilir.
-    Kırılma varsa tüm dönem için "ortalama ilişki" yorumu yapılmalı, rolling window düşünülmelidir.<br><br>
-
-    <b>Adım 9 — Johansen Eşbütünleşme Testi</b><br>
-    Yalnızca seriler durağan değilse (use_return=True) uygulanır.
-    Ham (level) veri ile seriler arasında uzun vadeli ilişki aranır.
-    Eşbütünleşme bulunursa OLS güvenilir — sahte regresyon riski ortadan kalkar.<br><br>
-
-    <b>⚠️ Genel Sınırlılık:</b> Feature'ların büyük bölümü hedef değişkenden türetilmiş teknik
-    indikatörlerdir. İçsellik (endogeneity) riski nedeniyle bulgular nedensellik değil,
-    korelasyon ilişkisi olarak yorumlanmalıdır.
-    </div>
-    """, unsafe_allow_html=True)
+if check_range and symbol:
+    with st.spinner("Veri aralığı sorgulanıyor..."):
+        try:
+            _ticker = yf.Ticker(symbol)
+            _hist   = _ticker.history(period="max", interval="1d", actions=False)
+            if _hist.index.tz is not None:
+                _hist.index = _hist.index.tz_localize(None)
+            if _hist.empty:
+                st.warning("Veri bulunamadı. Sembolü kontrol edin.")
+            else:
+                _start = _hist.index.min().date()
+                _end   = _hist.index.max().date()
+                _days  = len(_hist)
+                st.info(
+                    f"📅 **{symbol.upper()} mevcut veri aralığı** — "
+                    f"En eski: `{_start}` · En yeni: `{_end}` · Toplam: `{_days:,}` gün"
+                )
+        except Exception as e:
+            st.error(f"Sorgu hatası: {e}")
+elif check_range and not symbol:
+    st.warning("Lütfen önce sembol girin.")
 
 if run and symbol:
     st.divider()
