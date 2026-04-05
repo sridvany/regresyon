@@ -13,7 +13,7 @@ from statsmodels.stats.stattools import jarque_bera
 from statsmodels.regression.linear_model import OLS
 from statsmodels.tools import add_constant
 from statsmodels.tsa.vector_ar.vecm import coint_johansen
-from statsmodels.tsa.ardl import ARDL, ardl_select_order
+from statsmodels.tsa.ardl import ARDL, UECM, ardl_select_order
 
 st.set_page_config(page_title="tahmin.ai | Regresyon Sihirbazı", layout="centered")
 
@@ -810,12 +810,12 @@ if run and symbol:
             _ardl_y  = _ardl_y.loc[_common3]
             _ardl_x  = _ardl_x.loc[_common3]
 
-            # Parsimonious ARDL(1,1): p=1 AR lag, q=1 DL lag her regressör için
-            # statsmodels ARDL API: order=int tüm exog'a aynı lag uygular
-            _ardl_m   = ARDL(endog=_ardl_y, lags=1, exog=_ardl_x, order=1, trend="c")
-            _ardl_fit = _ardl_m.fit()
+            # UECM (Unrestricted ECM) — bounds_test bu sınıfta mevcut
+            # Parsimonious UECM(1,1): p=1 AR lag, q=1 DL lag
+            _uecm_m  = UECM(endog=_ardl_y, lags=1, exog=_ardl_x, order=1, trend="c")
+            _ardl_fit = _uecm_m.fit()
 
-            # bounds_test: case=3 → kısıtsız sabit, trend yok (en yaygın kullanım)
+            # bounds_test: case=3 → kısıtsız sabit, trend yok
             _bounds  = _ardl_fit.bounds_test(case=3)
             _f_stat  = float(_bounds.stat)
 
