@@ -233,6 +233,19 @@ if run and symbol:
             hist     = ticker.history(period="max", interval="1d", actions=False)
             if hist.index.tz is not None:
                 hist.index = hist.index.tz_localize(None)
+
+            # Sembolün tüm mevcut veri aralığını göster
+            if not hist.empty:
+                avail_start = hist.index.min().date()
+                avail_end   = hist.index.max().date()
+                avail_days  = len(hist)
+                st.info(
+                    f"📅 **{symbol.upper()} mevcut veri aralığı** — "
+                    f"En eski: `{avail_start}` · En yeni: `{avail_end}` · "
+                    f"Toplam: `{avail_days:,}` gün   "
+                    f"_(Seçilen aralık: {start_date} → {end_date})_"
+                )
+
             mask = (hist.index.date >= start_date) & (hist.index.date <= end_date)
             df   = hist.loc[mask].copy()
             if df.empty:
