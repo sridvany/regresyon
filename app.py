@@ -495,9 +495,13 @@ if run and symbol:
     # Farklı skalalı feature'ların ADF ve OLS üzerindeki
     # sayısal etkisini gidermek için uygulanır.
     # ==============================================================
-    working_raw           = df[after_vif + [target]].dropna().copy()
-    scaler                = RobustScaler()
+    working_raw            = df[after_vif + [target]].dropna().copy()
+    # Inf değerleri NaN'a çevir (Amihud, MEC, CS_Spread gibi oransal metriklerden gelebilir)
+    working_raw            = working_raw.replace([np.inf, -np.inf], np.nan).dropna()
+    scaler                 = RobustScaler()
     working_raw[after_vif] = scaler.fit_transform(working_raw[after_vif])
+    # Scaler sonrası kalan Inf/NaN (IQR=0 olan sabit feature'lardan oluşabilir)
+    working_raw            = working_raw.replace([np.inf, -np.inf], np.nan).dropna()
     sub = working_raw
 
     step_card(0, "RobustScaler Uygulandı", "fix",
