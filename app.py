@@ -251,12 +251,11 @@ if check_range and symbol:
 
                 # ── Veri Kalitesi Tanısı ──────────────────────────
                 _n_raw        = len(_hist)
-                _n_ohlc_all   = int((_hist["Open"]==_hist["High"]) & (_hist["High"]==_hist["Low"]) & (_hist["Low"]==_hist["Close"])).sum() if all(c in _hist.columns for c in ["Open","High","Low","Close"]) else 0
+                _n_ohlc_all   = int(((_hist["Open"]==_hist["High"]) & (_hist["High"]==_hist["Low"]) & (_hist["Low"]==_hist["Close"])).sum()) if all(c in _hist.columns for c in ["Open","High","Low","Close"]) else 0
                 _n_zero_range = int((_hist["High"]==_hist["Low"]).sum()) if all(c in _hist.columns for c in ["High","Low"]) else 0
                 _n_zero_vol   = int((_hist["Volume"]==0).sum()) if "Volume" in _hist.columns else 0
                 _n_nan        = int(_hist[["Open","High","Low","Close","Volume"]].isnull().any(axis=1).sum()) if all(c in _hist.columns for c in ["Open","High","Low","Close","Volume"]) else 0
-                _n_drop       = _n_ohlc_all + _n_zero_vol + _n_nan  # yaklaşık, örtüşme olabilir
-                _n_usable     = _n_raw - _n_ohlc_all  # dropna zaten NaN'ları düşürür
+                _n_usable     = _n_raw - _n_ohlc_all
 
                 diag_rows = [
                     {"Kontrol": "Ham veri (tüm tarihler)",        "Satır": f"{_n_raw:,}",        "Durum": "ℹ️"},
