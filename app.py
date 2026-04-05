@@ -425,7 +425,12 @@ if run and symbol:
     applied = []
     step    = 0
 
-    candidates = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != target]
+    # "Return" = Close.pct_change() — target use_return=True olduğunda
+    # target da return'e dönüşür → totoloji riski → her zaman çıkar
+    candidates = [c for c in df.columns
+                  if pd.api.types.is_numeric_dtype(df[c])
+                  and c != target
+                  and c != "Return"]
     sub        = df[candidates + [target]].dropna()
 
     # ==============================================================
