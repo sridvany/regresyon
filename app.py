@@ -27,7 +27,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🧭 Regresyon Tanı Sihirbazı")
+st.title("🧭 indikatör ilişkileri analizi")
 st.caption("Adım adım regresyon varsayım kontrolü — her sorun tespit edilir, düzeltilir, sonuç raporlanır.")
 
 # ============================================================
