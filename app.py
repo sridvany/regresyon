@@ -556,14 +556,19 @@ if run and symbol:
 
     # Veriyi hazırla
     working = sub[after_vif + [target]].dropna().copy()
+    working = working.replace([np.inf, -np.inf], np.nan).dropna()
     if use_return:
         working[target] = working[target].pct_change()
         for col in non_stat_feats:
             if col in working.columns:
                 working[col] = working[col].pct_change()
-    working = working.dropna()
-    y = working[target].values
-    X = add_constant(working[after_vif].values.astype(float))
+    working = working.replace([np.inf, -np.inf], np.nan).dropna()
+    y = working[target].values.astype(float)
+    X_arr = working[after_vif].values.astype(float)
+    # Son güvenlik kontrolü: Inf/NaN içeren satırları çıkar
+    valid = np.isfinite(X_arr).all(axis=1) & np.isfinite(y)
+    X_arr, y = X_arr[valid], y[valid]
+    X = add_constant(X_arr)
 
     try:
         ols_base = OLS(y, X).fit()
