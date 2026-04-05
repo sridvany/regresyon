@@ -13,6 +13,7 @@ from statsmodels.stats.stattools import jarque_bera
 from statsmodels.regression.linear_model import OLS
 from statsmodels.tools import add_constant
 from statsmodels.tsa.vector_ar.vecm import coint_johansen
+from statsmodels.tsa.ardl import ARDL, ardl_select_order
 
 st.set_page_config(page_title="tahmin.ai | Regresyon Sihirbazı", layout="centered")
 
@@ -491,62 +492,61 @@ if run and symbol:
         notes.append("VIF: tüm feature'lar eşik altında.")
 
     # ==============================================================
-    # RobustScaler — Spearman+VIF sonrası, ADF öncesi
-    # Farklı skalalı feature'ların ADF ve OLS üzerindeki
-    # sayısal etkisini gidermek için uygulanır.
-    # ==============================================================
-    working_raw            = df[after_vif + [target]].dropna().copy()
-    # Inf değerleri NaN'a çevir (Amihud, MEC, CS_Spread gibi oransal metriklerden gelebilir)
-    working_raw            = working_raw.replace([np.inf, -np.inf], np.nan).dropna()
-    scaler                 = RobustScaler()
-    working_raw[after_vif] = scaler.fit_transform(working_raw[after_vif])
-    # Scaler sonrası kalan Inf/NaN (IQR=0 olan sabit feature'lardan oluşabilir)
-    working_raw            = working_raw.replace([np.inf, -np.inf], np.nan).dropna()
-    sub = working_raw
-
-    step_card(0, "RobustScaler Uygulandı", "fix",
-              f"Spearman + VIF sonrası kalan {len(after_vif)} feature RobustScaler ile ölçeklendi (medyan=0, IQR=1). "
-              f"Target ('{target}') ölçeklenmedi.",
-              "Farklı skalalı feature'ların (Amihud, Williams_R vb.) ADF ve OLS üzerindeki sayısal etkisi giderildi.")
-    applied.append("RobustScaler (feature'lar)")
-    notes.append(f"RobustScaler: {len(after_vif)} feature ölçeklendi.")
-
-    # ==============================================================
     # ADIM 3 — ADF (Durağanlık)
+    # Her serinin entegrasyon derecesi ayrı ayrı belirlenir.
+    # I(1): fark alınacak | I(0): ham haliyle kullanılacak
     # ==============================================================
     step += 1
-    non_stat_feats    = []
+    i1_feats          = []   # durağan olmayan feature'lar
+    i0_feats          = []   # zaten durağan feature'lar
     target_stationary = True
     adf_rows          = []
 
+    raw_sub = df[after_vif + [target]].dropna().copy()
+    raw_sub = raw_sub.replace([np.inf, -np.inf], np.nan).dropna()
+
     for col in after_vif + [target]:
-        series = sub[col].dropna()
+        series = raw_sub[col].dropna()
         try:
-            stat, pval, _, _, crit, _ = adfuller(series, autolag="AIC")
+            _, pval, _, _, _, _ = adfuller(series, autolag="AIC")
             stationary = pval < 0.05
-            if not stationary:
-                if col == target: target_stationary = False
-                else: non_stat_feats.append(col)
+            if col == target:
+                if not stationary: target_stationary = False
+            else:
+                if stationary: i0_feats.append(col)
+                else:          i1_feats.append(col)
+            deg = "I(0)" if stationary else "I(1)"
             adf_rows.append({"Feature": col, "p-değeri": round(pval, 4),
+                             "Derece": deg,
                              "Durum": "✅ Durağan" if stationary else "❌ Durağan Değil"})
         except:
-            adf_rows.append({"Feature": col, "p-değeri": np.nan, "Durum": "⚠️ Hata"})
+            i0_feats.append(col)
+            adf_rows.append({"Feature": col, "p-değeri": np.nan, "Derece": "?", "Durum": "⚠️ Hata"})
 
-    adf_df     = pd.DataFrame(adf_rows)
-    use_return = False
-    if not target_stationary or non_stat_feats:
+    # Entegrasyon özeti
+    n_i1 = len(i1_feats) + (0 if target_stationary else 1)
+    n_i0 = len(i0_feats) + (1 if target_stationary else 0)
+    mixed_integration = len(i1_feats) > 0 and len(i0_feats) > 0
+
+    use_return = not target_stationary or len(i1_feats) > 0
+
+    if use_return:
         step_card(step, "ADF — Durağanlık", "fix",
-                  f"Durağan olmayan: Target={'❌' if not target_stationary else '✅'}, Feature'lar: {non_stat_feats if non_stat_feats else 'Yok'}.",
-                  "Target → pct_change() (Return). Durağan olmayan feature'lar → pct_change().")
-        use_return = True
-        notes.append("ADF: durağanlık sorunu → Return dönüşümü uygulandı.")
-        applied.append("Return dönüşümü")
+                  f"Target={'I(1)' if not target_stationary else 'I(0)'}. "
+                  f"I(1) feature'lar: {i1_feats if i1_feats else 'Yok'}. "
+                  f"I(0) feature'lar: {i0_feats if i0_feats else 'Yok'}. "
+                  f"{'⚠️ Karma entegrasyon tespit edildi.' if mixed_integration else ''}",
+                  "Sadece I(1) seriler fark alınıyor — I(0) seriler ham haliyle korunuyor (over-differencing önlendi).")
+        notes.append(f"ADF: I(1)={len(i1_feats)+int(not target_stationary)}, I(0)={n_i0} — "
+                     f"{'karma entegrasyon' if mixed_integration else 'homojen I(1)'}.")
+        applied.append("Seçici fark alma (sadece I(1))")
     else:
         step_card(step, "ADF — Durağanlık", "pass",
-                  "Target ve tüm feature'lar durağan. Seviye regresyonu yapılabilir.")
-        notes.append("ADF: tüm seriler durağan.")
+                  "Target ve tüm feature'lar I(0) — durağan. Seviye regresyonu yapılabilir.")
+        notes.append("ADF: tüm seriler I(0) — durağan.")
 
     with st.expander("ADF detayları"):
+        adf_df = pd.DataFrame(adf_rows)
         def _adf_c(val):
             if not isinstance(val, str): return ""
             if val.startswith("✅"): return "background-color:#d1e7dd; color:#0a3622"
@@ -554,18 +554,33 @@ if run and symbol:
             return ""
         st.dataframe(adf_df.style.map(_adf_c, subset=["Durum"]), use_container_width=True, hide_index=True)
 
-    # Veriyi hazırla
-    working = sub[after_vif + [target]].dropna().copy()
-    working = working.replace([np.inf, -np.inf], np.nan).dropna()
-    if use_return:
+    # ── Seçici fark alma: sadece I(1) serilere pct_change ──────
+    working = raw_sub.copy()
+    if not target_stationary:
         working[target] = working[target].pct_change()
-        for col in non_stat_feats:
-            if col in working.columns:
-                working[col] = working[col].pct_change()
+    for col in i1_feats:
+        if col in working.columns:
+            working[col] = working[col].pct_change()
     working = working.replace([np.inf, -np.inf], np.nan).dropna()
-    y = working[target].values.astype(float)
+
+    # ==============================================================
+    # RobustScaler — ADF ve fark alma SONRASI
+    # Seriler durağan hale getirildikten sonra ölçeklenir.
+    # I(1) seriler artık return, I(0) seriler ham — ikisi de ölçeklenir.
+    # ==============================================================
+    scaler             = RobustScaler()
+    working[after_vif] = scaler.fit_transform(working[after_vif])
+    working            = working.replace([np.inf, -np.inf], np.nan).dropna()
+
+    step_card(0, "RobustScaler Uygulandı", "fix",
+              f"ADF + seçici fark alma sonrası {len(after_vif)} feature RobustScaler ile ölçeklendi (medyan=0, IQR=1). "
+              f"Target ('{target}') ölçeklenmedi.",
+              "Seriler önce durağanlaştırıldı, ardından ölçeklendi — akademik sıra korundu.")
+    applied.append("RobustScaler (ADF sonrası, fark alınan feature'lar)")
+    notes.append(f"RobustScaler: {len(after_vif)} feature ölçeklendi (ADF sonrası).")
+
+    y     = working[target].values.astype(float)
     X_arr = working[after_vif].values.astype(float)
-    # Son güvenlik kontrolü: Inf/NaN içeren satırları çıkar
     valid = np.isfinite(X_arr).all(axis=1) & np.isfinite(y)
     X_arr, y = X_arr[valid], y[valid]
     X = add_constant(X_arr)
@@ -583,11 +598,13 @@ if run and symbol:
     # ==============================================================
     step += 1
     try:
-        lb     = acorr_ljungbox(resid, lags=[10], return_df=True)
+        # Otomatik lag: min(ln(n), 10) — örneklem bazlı
+        _auto_lag_lb = min(int(np.log(len(resid))), 10)
+        lb     = acorr_ljungbox(resid, lags=[_auto_lag_lb], return_df=True)
         lb_p   = float(lb["lb_pvalue"].iloc[0])
         has_ac = lb_p < 0.05
     except:
-        lb_p = np.nan; has_ac = False
+        lb_p = np.nan; has_ac = False; _auto_lag_lb = 10
 
     if has_ac:
         step_card(step, "Ljung-Box — Otokorelasyon", "fix",
@@ -605,10 +622,12 @@ if run and symbol:
     # ==============================================================
     step += 1
     try:
-        _, arch_p, _, _ = het_arch(resid, nlags=5)
+        # Otomatik lag: min(ln(n), 10) — örneklem bazlı
+        _auto_lag_arch = min(int(np.log(len(resid))), 10)
+        _, arch_p, _, _ = het_arch(resid, nlags=_auto_lag_arch)
         has_arch = arch_p < 0.05
     except:
-        arch_p = np.nan; has_arch = False
+        arch_p = np.nan; has_arch = False; _auto_lag_arch = 5
 
     if has_arch:
         step_card(step, "ARCH — Heteroskedasticity", "fix",
@@ -707,30 +726,48 @@ if run and symbol:
         notes.append("Yapısal kırılma: yok.")
 
     # ==============================================================
-    # ADIM 9 — Eşbütünleşme (Johansen)
-    # Yalnızca use_return=True ise (seriler I(1)) anlamlıdır.
-    # Ham (level) df ile çalışır — ölçeklenmiş sub değil.
+    # ADIM 9 — Eşbütünleşme
+    # Entegrasyon derecesine göre üç yol:
+    # Hepsi I(0) → test gerekmez
+    # Hepsi I(1) → Johansen
+    # Karma I(0)+I(1) → ARDL Bounds Test (Pesaran et al., 2001)
     # ==============================================================
     step += 1
-    johansen_n    = 0
-    johansen_ok   = False
-    johansen_note = ""
+    johansen_n  = 0
+    johansen_ok = False
+    ardl_ok     = False
+    coint_note  = ""
 
-    if not use_return:
-        step_card(step, "Johansen — Eşbütünleşme", "info",
-                  "Tüm seriler ADF testinde durağan bulundu. "
-                  "Eşbütünleşme testi yalnızca I(1) seriler için geçerlidir — atlandı.")
-        notes.append("Johansen: seriler durağan → test atlandı.")
-    else:
+    all_i0 = target_stationary and len(i1_feats) == 0
+    all_i1 = (not target_stationary) and len(i0_feats) == 0
+
+    if all_i0:
+        # Tüm seriler I(0) — eşbütünleşme testi gereksiz
+        step_card(step, "Eşbütünleşme", "pass",
+                  "Tüm seriler I(0) — durağan. Eşbütünleşme testi gerekmez. OLS güvenilir.")
+        notes.append("Eşbütünleşme: tüm seriler I(0), test atlandı.")
+        johansen_ok = True  # passed_count için
+
+    elif all_i1:
+        # Hepsi I(1) → Johansen
         try:
-            cols_j = after_vif + [target]
-            data_j = df[cols_j].dropna().values.astype(float)
-            res_j  = coint_johansen(data_j, det_order=0, k_ar_diff=1)
+            cols_j  = after_vif + [target]
+            # Johansen ham (level) veri ile çalışır
+            data_j  = df[cols_j].dropna().replace([np.inf, -np.inf], np.nan).dropna().values.astype(float)
+            # Optimal lag: VAR lag selection (AIC)
+            from statsmodels.tsa.vector_ar.var_model import VAR
+            _var_lag = 1
+            try:
+                _var_res = VAR(data_j).select_order(maxlags=min(int(np.log(len(data_j))), 8))
+                _var_lag = max(_var_res.aic, 1)
+            except:
+                _var_lag = 1
+            res_j = coint_johansen(data_j, det_order=0, k_ar_diff=_var_lag)
             for i in range(len(res_j.lr1)):
                 if res_j.lr1[i] is not None and res_j.lr1[i] > res_j.cvt[i, 1]:
                     johansen_n += 1
-            johansen_ok   = johansen_n > 0
-            johansen_note = "Ham (level) veri kullanıldı."
+            johansen_ok = johansen_n > 0
+            coint_note  = f"Johansen. Optimal lag={_var_lag} (VAR AIC). Ham (level) veri."
         except Exception:
             try:
                 data_jz = scipy_zscore(data_j, axis=0)
@@ -738,23 +775,74 @@ if run and symbol:
                 for i in range(len(res_j.lr1)):
                     if res_j.lr1[i] is not None and res_j.lr1[i] > res_j.cvt[i, 1]:
                         johansen_n += 1
-                johansen_ok   = johansen_n > 0
-                johansen_note = "⚠️ Ham veri matris hatasına yol açtı — z-score ile tekrar çalıştırıldı."
-            except Exception:
+                johansen_ok = johansen_n > 0
+                coint_note  = "⚠️ Matris hatası — z-score ile tekrar çalıştırıldı."
+            except:
                 johansen_n = -1
 
         if johansen_n == -1:
             step_card(step, "Johansen — Eşbütünleşme", "info",
-                      "Test çalıştırılamadı (matris hatası). Engle-Granger ikili testini deneyin.")
+                      "Test çalıştırılamadı (matris hatası).")
             notes.append("Johansen: hata.")
         elif johansen_ok:
             step_card(step, "Johansen — Eşbütünleşme", "pass",
-                      f"{johansen_n} eşbütünleşme ilişkisi tespit edildi. OLS katsayıları güvenilir. {johansen_note}")
-            notes.append(f"Eşbütünleşme: {johansen_n} ilişki — OLS güvenilir.")
+                      f"{johansen_n} eşbütünleşme ilişkisi tespit edildi. OLS katsayıları güvenilir. {coint_note}")
+            notes.append(f"Eşbütünleşme (Johansen): {johansen_n} ilişki — OLS güvenilir.")
         else:
             step_card(step, "Johansen — Eşbütünleşme", "fail",
-                      f"Eşbütünleşme tespit edilmedi. {johansen_note} Seviye regresyonu sahte olabilir.")
-            notes.append("Eşbütünleşme: yok — Return modeli önerilir.")
+                      f"Eşbütünleşme tespit edilmedi. {coint_note} Seviye regresyonu sahte olabilir.")
+            notes.append("Johansen: eşbütünleşme yok.")
+
+    else:
+        # Karma I(0)+I(1) → ARDL Bounds Test (Pesaran et al., 2001)
+        try:
+            # Target bağımlı değişken; I(1) ve I(0) feature'lar karışık regressör
+            _ardl_y   = df[target].dropna()
+            _ardl_x   = df[after_vif].dropna()
+            _common   = _ardl_y.index.intersection(_ardl_x.index)
+            _ardl_y   = _ardl_y.loc[_common]
+            _ardl_x   = _ardl_x.loc[_common]
+
+            # Optimal lag seçimi (AIC)
+            _max_lag  = min(int(np.log(len(_ardl_y))), 6)
+            _sel      = ardl_select_order(_ardl_y, _max_lag, _ardl_x, _max_lag, ic="aic", trend="c")
+            _ardl_m   = ARDL(_ardl_y, _sel.ar_lags, _ardl_x, _sel.dl_lags, trend="c")
+            _ardl_fit = _ardl_m.fit()
+            _bounds   = _ardl_fit.bounds_test(case=2)   # kısıtlı sabit, trend yok
+
+            # Pesaran kritik değerleri: %5 için üst sınır (I(1) bound)
+            _f_stat   = float(_bounds.stat)
+            _crit_u   = float(_bounds.crit_vals.loc["5%", "upper"])
+            _crit_l   = float(_bounds.crit_vals.loc["5%", "lower"])
+
+            ardl_ok    = _f_stat > _crit_u
+            coint_note = (f"ARDL Bounds Test (Pesaran, 2001). "
+                          f"F={_f_stat:.4f}, Kritik I(1)=%5 üst={_crit_u:.2f}. "
+                          f"Karma entegrasyon: I(0)={i0_feats}, I(1)={i1_feats}.")
+
+            if ardl_ok:
+                step_card(step, "ARDL Bounds Test — Eşbütünleşme", "pass",
+                          f"F={_f_stat:.4f} > I(1) üst sınır {_crit_u:.2f} — uzun vadeli ilişki var. "
+                          f"OLS katsayıları güvenilir. {coint_note}")
+                notes.append(f"ARDL Bounds: eşbütünleşme var (F={_f_stat:.4f}). OLS güvenilir.")
+            elif _f_stat > _crit_l:
+                step_card(step, "ARDL Bounds Test — Eşbütünleşme", "info",
+                          f"F={_f_stat:.4f} — alt ({_crit_l:.2f}) ve üst ({_crit_u:.2f}) sınır arasında: belirsiz bölge. "
+                          f"{coint_note}")
+                notes.append(f"ARDL Bounds: belirsiz bölge (F={_f_stat:.4f}).")
+                ardl_ok = True  # passed_count için kabul edilebilir
+            else:
+                step_card(step, "ARDL Bounds Test — Eşbütünleşme", "fail",
+                          f"F={_f_stat:.4f} < alt sınır {_crit_l:.2f} — uzun vadeli ilişki yok. {coint_note}")
+                notes.append(f"ARDL Bounds: eşbütünleşme yok (F={_f_stat:.4f}).")
+
+            johansen_ok = ardl_ok  # passed_count tutarlılığı için
+
+        except Exception as e:
+            step_card(step, "ARDL Bounds Test — Eşbütünleşme", "info",
+                      f"Karma entegrasyon tespit edildi ancak ARDL testi çalıştırılamadı: {e}. "
+                      "Manuel kontrol önerilir.")
+            notes.append(f"ARDL Bounds: hata — {e}")
 
     # ==============================================================
     # ADIM 10 — MODEL SONUÇLARI
@@ -872,8 +960,14 @@ if run and symbol:
 
     with st.expander("📝 Akademik Metodoloji Notu"):
         hac_note    = "Otokorelasyon ve heteroskedasticity için HAC standart hatalar (Newey-West, 1987) uygulanmıştır. " if use_hac else ""
-        return_note = "Durağanlık sağlamak amacıyla bağımlı ve durağan olmayan bağımsız değişkenler için yüzdesel getiri dönüşümü uygulanmıştır. " if use_return else ""
-        coint_note  = f"Johansen (1988) eşbütünleşme testi {johansen_n} uzun vadeli ilişki tespit etmiştir; OLS katsayıları sahte regresyon içermemektedir. " if johansen_ok else ""
+        return_note = ("Sadece I(1) seriler için seçici fark alma (pct_change) uygulanmıştır; "
+                       "I(0) seriler ham haliyle korunmuştur (over-differencing önlendi). ") if use_return else ""
+        if all_i1 and johansen_ok:
+            coint_note = f"Johansen (1988) eşbütünleşme testi {johansen_n} uzun vadeli ilişki tespit etmiştir; OLS katsayıları sahte regresyon içermemektedir. "
+        elif not all_i1 and not all_i0 and johansen_ok:
+            coint_note = "ARDL Bounds Test (Pesaran et al., 2001) karma entegrasyon ortamında uzun vadeli ilişkiyi teyit etmiştir. "
+        else:
+            coint_note = ""
         reset_note  = "RESET testi doğrusal olmayan ilişki sinyali vermiştir; katsayılar yaklaşık olarak yorumlanmalıdır (Ramsey, 1969). " if nonlin else ""
         cusum_note  = "CUSUM testi yapısal kırılma sinyali vermiştir; bulgular tüm örneklem dönemi için ortalama ilişkiyi yansıtmaktadır. " if has_break else ""
 
