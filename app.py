@@ -803,10 +803,10 @@ if run and symbol:
             _ardl_y   = _ardl_y.loc[_common]
             _ardl_x   = _ardl_x.loc[_common]
 
-            # Optimal lag seçimi (AIC)
-            _max_lag  = min(int(np.log(len(_ardl_y))), 6)
-            _sel      = ardl_select_order(_ardl_y, _max_lag, _ardl_x, _max_lag, ic="aic", trend="c")
-            _ardl_m   = ARDL(_ardl_y, _sel.ar_lags, _ardl_x, _sel.dl_lags, trend="c")
+            # Parsimonious ARDL(1,1): p=1 AR lag, q=1 DL lag
+            # Günlük finansal veride standart kabul — lag optimizasyonu
+            # 12+ feature ile kombinatoryal patlama yaratır.
+            _ardl_m   = ARDL(_ardl_y, lags=1, order={col: 1 for col in _ardl_x.columns}, trend="c")
             _ardl_fit = _ardl_m.fit()
             _bounds   = _ardl_fit.bounds_test(case=2)   # kısıtlı sabit, trend yok
 
@@ -816,8 +816,8 @@ if run and symbol:
             _crit_l   = float(_bounds.crit_vals.loc["5%", "lower"])
 
             ardl_ok    = _f_stat > _crit_u
-            coint_note = (f"ARDL Bounds Test (Pesaran, 2001). "
-                          f"F={_f_stat:.4f}, Kritik I(1)=%5 üst={_crit_u:.2f}. "
+            coint_note = (f"ARDL(1,1) Bounds Test (Pesaran, 2001). "
+                          f"F={_f_stat:.4f}, %5 kritik: alt={_crit_l:.2f} üst={_crit_u:.2f}. "
                           f"Karma entegrasyon: I(0)={i0_feats}, I(1)={i1_feats}.")
 
             if ardl_ok:
