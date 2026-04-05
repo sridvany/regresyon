@@ -979,7 +979,7 @@ if run and symbol:
         if all_i1 and johansen_ok:
             coint_note = f"Johansen (1988) eşbütünleşme testi {johansen_n} uzun vadeli ilişki tespit etmiştir; OLS katsayıları sahte regresyon içermemektedir. "
         elif not all_i1 and not all_i0 and johansen_ok:
-            coint_note = "ARDL Bounds Test (Pesaran et al., 2001) karma entegrasyon ortamında uzun vadeli ilişkiyi teyit etmiştir. "
+            coint_note = "Engle-Granger ikili eşbütünleşme testi karma entegrasyon ortamında uzun vadeli ilişkiyi teyit etmiştir. "
         else:
             coint_note = ""
         reset_note  = "RESET testi doğrusal olmayan ilişki sinyali vermiştir; katsayılar yaklaşık olarak yorumlanmalıdır (Ramsey, 1969). " if nonlin else ""
