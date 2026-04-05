@@ -674,16 +674,19 @@ if run and symbol:
 
     # Akademik not
     with st.expander("📝 Akademik Metodoloji Notu"):
-        hac_note = "Otokorelasyon ve heteroskedasticity için HAC standart hatalar (Newey-West, 1987) uygulanmıştır. " if use_hac else ""
+        hac_note    = "Otokorelasyon ve heteroskedasticity için HAC standart hatalar (Newey-West, 1987) uygulanmıştır. " if use_hac else ""
         return_note = "Durağanlık sağlamak amacıyla bağımlı ve durağan olmayan bağımsız değişkenler için yüzdesel getiri dönüşümü uygulanmıştır. " if use_return else ""
-        coint_note = f"Johansen (1988) eşbütünleşme testi {johansen_n} uzun vadeli ilişki tespit etmiştir; OLS katsayıları sahte regresyon içermemektedir. " if johansen_ok else ""
-        reset_note = "RESET testi doğrusal olmayan ilişki sinyali vermiştir; katsayılar yaklaşık olarak yorumlanmalıdır (Ramsey, 1969). " if nonlin else ""
-        cusum_note = "CUSUM testi yapısal kırılma sinyali vermiştir; bulgular tüm örneklem dönemi için ortalama ilişkiyi yansıtmaktadır. " if has_break else ""
+        coint_note  = f"Johansen (1988) eşbütünleşme testi {johansen_n} uzun vadeli ilişki tespit etmiştir; OLS katsayıları sahte regresyon içermemektedir. " if johansen_ok else ""
+        reset_note  = "RESET testi doğrusal olmayan ilişki sinyali vermiştir; katsayılar yaklaşık olarak yorumlanmalıdır (Ramsey, 1969). " if nonlin else ""
+        cusum_note  = "CUSUM testi yapısal kırılma sinyali vermiştir; bulgular tüm örneklem dönemi için ortalama ilişkiyi yansıtmaktadır. " if has_break else ""
 
         st.markdown(f"""
 Bu çalışmada {symbol.upper()} için {start_date} — {end_date} dönemine ait günlük veri kullanılmıştır.
 Çoklu doğrusallık Variance Inflation Factor (VIF > {vif_thr}) ile kontrol edilmiş, yüksek VIF değerine sahip değişkenler iteratif olarak çıkarılmıştır.
+Çoklu test sorununun yalancı anlamlılık riskini azaltmak amacıyla Spearman korelasyon eşiğine Bonferroni düzeltmesi uygulanmıştır.
 Durağanlık Augmented Dickey-Fuller (ADF) testi ile sınanmıştır.
 {return_note}{hac_note}{coint_note}{reset_note}{cusum_note}
 Final modelde {len(sig_f)} değişken istatistiksel olarak anlamlı bulunmuştur (p < 0.05): {', '.join(sig_f) if sig_f else 'Yok'}.
+
+**Sınırlılıklar:** Bağımsız değişkenlerin büyük bölümü hedef değişkenden (kapanış fiyatı) türetilmiş teknik indikatörlerdir. Bu durum içsellik (endogeneity) sorununa yol açabilir ve OLS katsayılarının yanlı olmasına neden olabilir. Araç değişken (IV) tahmini için uygun enstrüman bulunamamıştır. Bu nedenle bulgular nedensellik değil, korelasyon ilişkisi olarak yorumlanmalıdır.
         """)
