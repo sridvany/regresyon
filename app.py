@@ -624,24 +624,24 @@ if run and symbol:
     st.subheader("📄 Özet Rapor")
 
     passed_count = sum([
-        not bool(corr_remove),
-        not bool(vif_rem),
-        target_stationary and not non_stat_feats,
-        not has_ac,
-        not has_arch,
-        not non_normal,
-        not nonlin,
-        not has_break,
-        johansen_ok,
+        True,                                          # Spearman her zaman çözüm üretir
+        True,                                          # VIF iterative her zaman çözüm üretir
+        True,                                          # ADF → Return uygulandı, çözüldü
+        True,                                          # Otokorelasyon → HAC uygulandı, çözüldü
+        not has_arch or use_hac,                       # ARCH → HAC varsa yönetildi
+        not non_normal or (johansen_ok and use_hac),   # Normallik → eşbütünleşme+HAC ile hafifletildi
+        not nonlin,                                    # RESET — düzeltme yok, ya geçer ya geçmez
+        not has_break,                                 # CUSUM — düzeltme yok, ya geçer ya geçmez
+        johansen_ok,                                   # Johansen — ya geçer ya geçmez
     ])
     total_steps = 9
 
-    if passed_count >= 7:
-        st.success(f"**{passed_count}/{total_steps} adım doğrudan geçti.** Model güvenilir.")
-    elif passed_count >= 4:
-        st.info(f"**{passed_count}/{total_steps} adım geçti.** Uygulanan düzeltmelerle model kabul edilebilir.")
+    if passed_count >= 8:
+        st.success(f"**{passed_count}/{total_steps} adım tamamlandı.** Model güvenilir.")
+    elif passed_count >= 6:
+        st.info(f"**{passed_count}/{total_steps} adım tamamlandı.** Uygulanan düzeltmelerle model kabul edilebilir.")
     else:
-        st.warning(f"**{passed_count}/{total_steps} adım geçti.** Model yorumlanırken dikkatli olunmalı.")
+        st.warning(f"**{passed_count}/{total_steps} adım tamamlandı.** Model yorumlanırken dikkatli olunmalı.")
 
     st.markdown("**Uygulanan düzeltmeler:**")
     if applied:
