@@ -36,29 +36,17 @@ st.caption("Adım adım regresyon varsayım kontrolü — her sorun tespit edili
 # ============================================================
 
 def clean_ohlcv(df):
-    """
-    Hibrit OHLCV temizliği:
-    1. High < Low → çıkar (imkânsız, kesin hata)
-    2. Close <= 0 veya Volume < 0 → çıkar (veri hatası)
-    3. OHLC tümü eşit + Volume=0 → çıkar (donuk fiyat)
-    4. Volume=0, fiyat hareket etmiş → Volume ffill
-    5. Tek izole NaN → ffill
-    6. 3+ ardışık NaN → çıkar
-    """
     log = {}
     n0  = len(df)
 
-    # 1. High < Low
     mask = df["High"] < df["Low"]
     log["High < Low (imkânsız)"] = int(mask.sum())
     df = df[~mask].copy()
 
-    # 2. Negatif/sıfır fiyat veya negatif volume
     mask2 = (df["Close"] <= 0) | (df["Volume"] < 0)
     log["Close ≤ 0 veya Volume < 0"] = int(mask2.sum())
     df = df[~mask2].copy()
 
-    # 3. OHLC tümü eşit + Volume=0 (donuk fiyat)
     mask3 = (
         (df["Open"]  == df["High"])  &
         (df["High"]  == df["Low"])   &
@@ -68,13 +56,11 @@ def clean_ohlcv(df):
     log["Donuk fiyat (OHLC eşit + Volume=0)"] = int(mask3.sum())
     df = df[~mask3].copy()
 
-    # 4. Volume=0 ama fiyat hareket etmiş → Volume ffill
     vol_zero = df["Volume"] == 0
     log["Volume=0 (fiyat hareketli, ffill)"] = int(vol_zero.sum())
     df.loc[vol_zero, "Volume"] = np.nan
     df["Volume"] = df["Volume"].ffill()
 
-    # 5-6. NaN işlemi: 3+ ardışık → çıkar, izole → ffill
     nan_mask = df[["Open","High","Low","Close","Volume"]].isnull().any(axis=1)
     consec   = nan_mask.groupby((nan_mask != nan_mask.shift()).cumsum()).transform("sum")
     long_nan = (nan_mask) & (consec >= 3)
@@ -181,7 +167,6 @@ def calc_amihud(close, volume):
     return ret / volume.replace(0, np.nan)
 
 def calc_mec(close, window=63):
-    # T = ret_long_period / ret_short_period = 30 / 5 = 6
     T         = 6
     ret_long  = np.log(close / close.shift(30))
     ret_short = np.log(close / close.shift(5))
@@ -289,7 +274,7 @@ with col_btn2:
     run = st.button("▶ Sihirbazı Başlat", type="primary", use_container_width=True)
 
 # ============================================================
-# Veri Aralığı Butonu — İndir + Temizle + Raporla
+# Veri Aralığı Butonu
 # ============================================================
 
 if check_range and symbol:
@@ -303,7 +288,6 @@ if check_range and symbol:
             if _hist.empty:
                 st.warning("Veri bulunamadı. Sembolü kontrol edin.")
             else:
-                # Tüm mevcut aralık bilgisi
                 _start = _hist.index.min().date()
                 _end   = _hist.index.max().date()
                 _days  = len(_hist)
@@ -312,14 +296,12 @@ if check_range and symbol:
                     f"En eski: `{_start}` · En yeni: `{_end}` · Toplam: `{_days:,}` gün"
                 )
 
-                # Seçilen aralığa filtrele
                 mask = (_hist.index.date >= start_date) & (_hist.index.date <= end_date)
                 _sub = _hist.loc[mask].copy()
 
                 if _sub.empty:
                     st.error("Seçilen tarih aralığında veri bulunamadı.")
                 else:
-                    # ── Temizlik öncesi tanı ──────────────────────────
                     _n_raw        = len(_sub)
                     _n_ohlc_all   = int(((_sub["Open"]==_sub["High"]) & (_sub["High"]==_sub["Low"]) & (_sub["Low"]==_sub["Close"]) & (_sub["Volume"]==0)).sum())
                     _n_zero_range = int((_sub["High"]==_sub["Low"]).sum())
@@ -346,7 +328,6 @@ if check_range and symbol:
                         return ""
                     st.dataframe(diag_df.style.map(_dq, subset=["Durum"]), use_container_width=True, hide_index=True)
 
-                    # Aykırı değer detayı
                     if len(_outliers) > 0:
                         with st.expander(f"⚠️ Aykırı Değerler — {len(_outliers)} gün (|Return| > %{int(_outlier_thr*100)})"):
                             _out_df = pd.DataFrame({
@@ -356,7 +337,6 @@ if check_range and symbol:
                             st.dataframe(_out_df, use_container_width=True, hide_index=True)
                             st.caption("Kriz dönemlerine ait gerçek sinyaller olabilir — winsorize uygulanmadı.")
 
-                    # ── clean_ohlcv uygula ──────────────────────────
                     _clean, _log = clean_ohlcv(_sub)
 
                     st.markdown("**🧹 Temizlik Sonucu**")
@@ -368,7 +348,6 @@ if check_range and symbol:
                     clean_rows.append({"İşlem": "✅ Temizlik sonrası (kullanılacak)", "Etkilenen Satır": f"{_log['_n1']:,}"})
                     st.dataframe(pd.DataFrame(clean_rows), use_container_width=True, hide_index=True)
 
-                    # session_state'e kaydet
                     st.session_state["clean_df"]    = _clean
                     st.session_state["clean_sym"]   = symbol.upper()
                     st.session_state["clean_start"] = start_date
@@ -387,7 +366,6 @@ elif check_range and not symbol:
 
 if run and symbol:
 
-    # Veri Aralığı butonu basılmadan sihirbaz çalışmasın
     if "clean_df" not in st.session_state or st.session_state.get("clean_sym") != symbol.upper():
         st.error("⛔ Önce '📅 Veri Aralığı' butonuna basarak veriyi temizleyin.")
         st.stop()
@@ -411,7 +389,6 @@ if run and symbol:
         st.error(f"'{target}' sütunu veri setinde yok.")
         st.stop()
 
-    # ── build_indicators ─────────────────────────────────────
     with st.spinner("İndikatörler hesaplanıyor..."):
         df = build_indicators(df)
         ohlc_mask = ~((df["Open"]==df["High"])&(df["High"]==df["Low"])&(df["Low"]==df["Close"]))
@@ -425,92 +402,29 @@ if run and symbol:
     applied = []
     step    = 0
 
-    # "Return" = Close.pct_change() — target use_return=True olduğunda
-    # target da return'e dönüşür → totoloji riski → her zaman çıkar
+    # "Return" her zaman çıkar — totoloji riski
     candidates = [c for c in df.columns
                   if pd.api.types.is_numeric_dtype(df[c])
                   and c != target
                   and c != "Return"]
-    sub        = df[candidates + [target]].dropna()
+
+    # ── Ham veri: ADF için tüm candidates + target ──────────────
+    raw_sub = df[candidates + [target]].dropna().copy()
+    raw_sub = raw_sub.replace([np.inf, -np.inf], np.nan).dropna()
 
     # ==============================================================
-    # ADIM 1 — Spearman Korelasyon (Bonferroni düzeltmeli)
+    # ADIM 1 — ADF (Durağanlık) ← Pipeline'da ilk sıraya alındı
+    # Ham seriler üzerinde çalışmalı; feature seçiminden önce gelir.
+    # I(1) seriler sahte korelasyon ürettiğinden Spearman/VIF'ten önce
+    # durağanlaştırılmalıdır.
     # ==============================================================
     step += 1
-    n_tests        = len(candidates)
-    bonferroni_thr = corr_low / n_tests
-    corr_vals      = sub[candidates].apply(lambda col: stats.spearmanr(col, sub[target])[0]).abs()
-    low_list       = corr_vals[corr_vals < bonferroni_thr].index.tolist()
-    fm             = sub[candidates].corr(method="spearman").abs()
-    upper          = fm.where(np.triu(np.ones(fm.shape), k=1).astype(bool))
-    high_list      = []
-    for col in upper.columns:
-        partners = upper.index[upper[col] > corr_high].tolist()
-        for p in partners:
-            drop = p if corr_vals.get(p, 0) <= corr_vals.get(col, 0) else col
-            if drop not in high_list and drop not in low_list:
-                high_list.append(drop)
-    corr_remove = list(set(low_list + high_list))
-    after_corr  = [f for f in candidates if f not in corr_remove]
-
-    bonferroni_info = f"Bonferroni düzeltmesi: eşik = {corr_low:.2f} / {n_tests} = {bonferroni_thr:.4f}"
-    if corr_remove:
-        step_card(step, "Spearman Korelasyon", "fix",
-                  f"{len(candidates)} feature test edildi. {bonferroni_info}. "
-                  f"Düşük |ρ|: {low_list if low_list else 'Yok'}. Yüksek çapraz korelasyon: {high_list if high_list else 'Yok'}.",
-                  f"{len(corr_remove)} feature çıkarıldı → {len(after_corr)} kaldı: `{'`, `'.join(after_corr)}`")
-        notes.append(f"Spearman filtresi (Bonferroni): {len(corr_remove)} feature çıkarıldı. Eşik={bonferroni_thr:.4f}")
-    else:
-        step_card(step, "Spearman Korelasyon", "pass",
-                  f"{len(candidates)} feature test edildi. {bonferroni_info}. Sorun yok.")
-        notes.append(f"Spearman filtresi (Bonferroni): tüm feature'lar geçti. Eşik={bonferroni_thr:.4f}")
-
-    # ==============================================================
-    # ADIM 2 — VIF (Iterative)
-    # ==============================================================
-    step += 1
-    remaining = after_corr.copy()
-    vif_rem   = []
-    while True:
-        sub_vif  = sub[remaining].dropna()
-        X_v      = sub_vif.values.astype(float)
-        vif_vals = {}
-        for i, col in enumerate(remaining):
-            try:    vif_vals[col] = variance_inflation_factor(X_v, i)
-            except: vif_vals[col] = np.nan
-        max_col = max(vif_vals, key=lambda c: vif_vals[c] if not np.isnan(vif_vals[c]) else 0)
-        if vif_vals[max_col] > vif_thr:
-            vif_rem.append(max_col)
-            remaining.remove(max_col)
-        else:
-            break
-    after_vif = remaining
-
-    if vif_rem:
-        step_card(step, "VIF — Çoklu Doğrusallık", "fix",
-                  f"VIF > {vif_thr} olan feature'lar iteratif olarak çıkarıldı.",
-                  f"Çıkarılanlar: `{'`, `'.join(vif_rem)}` → Kalan: `{'`, `'.join(after_vif)}`")
-        notes.append(f"VIF: {len(vif_rem)} feature çıkarıldı.")
-    else:
-        step_card(step, "VIF — Çoklu Doğrusallık", "pass",
-                  f"Tüm feature'ların VIF değeri ≤ {vif_thr}. Çoklu doğrusallık yok.")
-        notes.append("VIF: tüm feature'lar eşik altında.")
-
-    # ==============================================================
-    # ADIM 3 — ADF (Durağanlık)
-    # Her serinin entegrasyon derecesi ayrı ayrı belirlenir.
-    # I(1): fark alınacak | I(0): ham haliyle kullanılacak
-    # ==============================================================
-    step += 1
-    i1_feats          = []   # durağan olmayan feature'lar
-    i0_feats          = []   # zaten durağan feature'lar
+    i1_feats          = []
+    i0_feats          = []
     target_stationary = True
     adf_rows          = []
 
-    raw_sub = df[after_vif + [target]].dropna().copy()
-    raw_sub = raw_sub.replace([np.inf, -np.inf], np.nan).dropna()
-
-    for col in after_vif + [target]:
+    for col in candidates + [target]:
         series = raw_sub[col].dropna()
         try:
             _, pval, _, _, _, _ = adfuller(series, autolag="AIC")
@@ -528,11 +442,9 @@ if run and symbol:
             i0_feats.append(col)
             adf_rows.append({"Feature": col, "p-değeri": np.nan, "Derece": "?", "Durum": "⚠️ Hata"})
 
-    # Entegrasyon özeti
     n_i1 = len(i1_feats) + (0 if target_stationary else 1)
     n_i0 = len(i0_feats) + (1 if target_stationary else 0)
     mixed_integration = len(i1_feats) > 0 and len(i0_feats) > 0
-
     use_return = not target_stationary or len(i1_feats) > 0
 
     if use_return:
@@ -569,20 +481,84 @@ if run and symbol:
     working = working.replace([np.inf, -np.inf], np.nan).dropna()
 
     # ==============================================================
-    # RobustScaler — ADF ve fark alma SONRASI
-    # Seriler durağan hale getirildikten sonra ölçeklenir.
-    # I(1) seriler artık return, I(0) seriler ham — ikisi de ölçeklenir.
+    # ADIM 2 — Spearman Korelasyon (Bonferroni düzeltmeli)
+    # Fark alınmış (durağan) seriler üzerinde çalışır.
+    # Ham I(1) seriler sahte korelasyon üretirdi.
+    # ==============================================================
+    step += 1
+    n_tests        = len(candidates)
+    bonferroni_thr = corr_low / n_tests
+    corr_vals      = working[candidates].apply(lambda col: stats.spearmanr(col, working[target])[0]).abs()
+    low_list       = corr_vals[corr_vals < bonferroni_thr].index.tolist()
+    fm             = working[candidates].corr(method="spearman").abs()
+    upper          = fm.where(np.triu(np.ones(fm.shape), k=1).astype(bool))
+    high_list      = []
+    for col in upper.columns:
+        partners = upper.index[upper[col] > corr_high].tolist()
+        for p in partners:
+            drop = p if corr_vals.get(p, 0) <= corr_vals.get(col, 0) else col
+            if drop not in high_list and drop not in low_list:
+                high_list.append(drop)
+    corr_remove = list(set(low_list + high_list))
+    after_corr  = [f for f in candidates if f not in corr_remove]
+
+    bonferroni_info = f"Bonferroni düzeltmesi: eşik = {corr_low:.2f} / {n_tests} = {bonferroni_thr:.4f}"
+    if corr_remove:
+        step_card(step, "Spearman Korelasyon", "fix",
+                  f"{len(candidates)} feature test edildi. {bonferroni_info}. "
+                  f"Düşük |ρ|: {low_list if low_list else 'Yok'}. Yüksek çapraz korelasyon: {high_list if high_list else 'Yok'}.",
+                  f"{len(corr_remove)} feature çıkarıldı → {len(after_corr)} kaldı: `{'`, `'.join(after_corr)}`")
+        notes.append(f"Spearman filtresi (Bonferroni): {len(corr_remove)} feature çıkarıldı. Eşik={bonferroni_thr:.4f}")
+    else:
+        step_card(step, "Spearman Korelasyon", "pass",
+                  f"{len(candidates)} feature test edildi. {bonferroni_info}. Sorun yok.")
+        notes.append(f"Spearman filtresi (Bonferroni): tüm feature'lar geçti. Eşik={bonferroni_thr:.4f}")
+
+    # ==============================================================
+    # ADIM 3 — VIF (Iterative)
+    # Durağan seriler üzerinde çalışır.
+    # ==============================================================
+    step += 1
+    remaining = after_corr.copy()
+    vif_rem   = []
+    while True:
+        sub_vif  = working[remaining].dropna()
+        X_v      = sub_vif.values.astype(float)
+        vif_vals = {}
+        for i, col in enumerate(remaining):
+            try:    vif_vals[col] = variance_inflation_factor(X_v, i)
+            except: vif_vals[col] = np.nan
+        max_col = max(vif_vals, key=lambda c: vif_vals[c] if not np.isnan(vif_vals[c]) else 0)
+        if vif_vals[max_col] > vif_thr:
+            vif_rem.append(max_col)
+            remaining.remove(max_col)
+        else:
+            break
+    after_vif = remaining
+
+    if vif_rem:
+        step_card(step, "VIF — Çoklu Doğrusallık", "fix",
+                  f"VIF > {vif_thr} olan feature'lar iteratif olarak çıkarıldı.",
+                  f"Çıkarılanlar: `{'`, `'.join(vif_rem)}` → Kalan: `{'`, `'.join(after_vif)}`")
+        notes.append(f"VIF: {len(vif_rem)} feature çıkarıldı.")
+    else:
+        step_card(step, "VIF — Çoklu Doğrusallık", "pass",
+                  f"Tüm feature'ların VIF değeri ≤ {vif_thr}. Çoklu doğrusallık yok.")
+        notes.append("VIF: tüm feature'lar eşik altında.")
+
+    # ==============================================================
+    # RobustScaler — ADF, Spearman, VIF sonrası
     # ==============================================================
     scaler             = RobustScaler()
     working[after_vif] = scaler.fit_transform(working[after_vif])
     working            = working.replace([np.inf, -np.inf], np.nan).dropna()
 
     step_card(0, "RobustScaler Uygulandı", "fix",
-              f"ADF + seçici fark alma sonrası {len(after_vif)} feature RobustScaler ile ölçeklendi (medyan=0, IQR=1). "
+              f"ADF + Spearman + VIF sonrası {len(after_vif)} feature RobustScaler ile ölçeklendi (medyan=0, IQR=1). "
               f"Target ('{target}') ölçeklenmedi.",
-              "Seriler önce durağanlaştırıldı, ardından ölçeklendi — akademik sıra korundu.")
-    applied.append("RobustScaler (ADF sonrası, fark alınan feature'lar)")
-    notes.append(f"RobustScaler: {len(after_vif)} feature ölçeklendi (ADF sonrası).")
+              "Seriler önce durağanlaştırıldı ve filtrelendi, ardından ölçeklendi — akademik sıra korundu.")
+    applied.append("RobustScaler (ADF + feature seçimi sonrası)")
+    notes.append(f"RobustScaler: {len(after_vif)} feature ölçeklendi.")
 
     y     = working[target].values.astype(float)
     X_arr = working[after_vif].values.astype(float)
@@ -603,7 +579,6 @@ if run and symbol:
     # ==============================================================
     step += 1
     try:
-        # Otomatik lag: min(ln(n), 10) — örneklem bazlı
         _auto_lag_lb = min(int(np.log(len(resid))), 10)
         lb     = acorr_ljungbox(resid, lags=[_auto_lag_lb], return_df=True)
         lb_p   = float(lb["lb_pvalue"].iloc[0])
@@ -623,11 +598,9 @@ if run and symbol:
 
     # ==============================================================
     # ADIM 5 — ARCH (Heteroskedasticity)
-    # Ham artıklar üzerinde test et, HAC kararından bağımsız
     # ==============================================================
     step += 1
     try:
-        # Otomatik lag: min(ln(n), 10) — örneklem bazlı
         _auto_lag_arch = min(int(np.log(len(resid))), 10)
         _, arch_p, _, _ = het_arch(resid, nlags=_auto_lag_arch)
         has_arch = arch_p < 0.05
@@ -644,7 +617,6 @@ if run and symbol:
                   f"p = {arch_p:.4f} ≥ 0.05 — sabit varyans. OLS verimli.")
         notes.append("ARCH etkisi yok.")
 
-    # HAC kararı: Ljung-Box VEYA ARCH başarısız olursa uygula
     use_hac = has_ac or has_arch
     try:
         if use_hac:
@@ -732,10 +704,6 @@ if run and symbol:
 
     # ==============================================================
     # ADIM 9 — Eşbütünleşme
-    # Entegrasyon derecesine göre üç yol:
-    # Hepsi I(0) → test gerekmez
-    # Hepsi I(1) → Johansen
-    # Karma I(0)+I(1) → ARDL Bounds Test (Pesaran et al., 2001)
     # ==============================================================
     step += 1
     johansen_n  = 0
@@ -747,19 +715,15 @@ if run and symbol:
     all_i1 = (not target_stationary) and len(i0_feats) == 0
 
     if all_i0:
-        # Tüm seriler I(0) — eşbütünleşme testi gereksiz
         step_card(step, "Eşbütünleşme", "pass",
                   "Tüm seriler I(0) — durağan. Eşbütünleşme testi gerekmez. OLS güvenilir.")
         notes.append("Eşbütünleşme: tüm seriler I(0), test atlandı.")
-        johansen_ok = True  # passed_count için
+        johansen_ok = True
 
     elif all_i1:
-        # Hepsi I(1) → Johansen
         try:
             cols_j  = after_vif + [target]
-            # Johansen ham (level) veri ile çalışır
             data_j  = df[cols_j].dropna().replace([np.inf, -np.inf], np.nan).dropna().values.astype(float)
-            # Optimal lag: VAR lag selection (AIC)
             from statsmodels.tsa.vector_ar.var_model import VAR
             _var_lag = 1
             try:
@@ -799,16 +763,11 @@ if run and symbol:
             notes.append("Johansen: eşbütünleşme yok.")
 
     else:
-        # Karma I(0)+I(1) — Engle-Granger ikili eşbütünleşme testi
-        # ARDL Bounds Test yerine: her I(1) feature ile target arasında
-        # pairwise EG testi uygulanır. Hızlı ve karma entegrasyonda geçerli.
         from statsmodels.tsa.stattools import coint as eg_coint
         try:
             _eg_y      = df[target].dropna()
-            _eg_pairs  = []   # (feature, p-value, sonuç)
+            _eg_pairs  = []
             _coint_cnt = 0
-
-            # Sadece I(1) feature'larla test — I(0) zaten durağan
             _test_cols = i1_feats if i1_feats else after_vif
             for _col in _test_cols:
                 try:
@@ -840,7 +799,6 @@ if run and symbol:
                           f"Hiçbir I(1) feature ile eşbütünleşme bulunamadı. {coint_note}")
                 notes.append("EG eşbütünleşme: yok.")
 
-            # EG detay tablosu
             if _eg_pairs:
                 with st.expander("Engle-Granger detayları"):
                     def _eg_c(val):
@@ -943,15 +901,15 @@ if run and symbol:
     st.subheader("📄 Özet Rapor")
 
     passed_count = sum([
+        True,                                        # ADF
         True,                                        # Spearman
         True,                                        # VIF
-        True,                                        # ADF
         True,                                        # Ljung-Box
         not has_arch or use_hac,                     # ARCH
         not non_normal or (johansen_ok and use_hac), # Normallik
         not nonlin,                                  # RESET
         not has_break,                               # CUSUM
-        johansen_ok or not use_return,               # Johansen
+        johansen_ok or not use_return,               # Eşbütünleşme
     ])
     total_steps = 9
 
@@ -988,10 +946,10 @@ if run and symbol:
         st.markdown(f"""
 Bu çalışmada {symbol.upper()} için {start_date} — {end_date} dönemine ait günlük veri kullanılmıştır.
 Ham OHLCV verisi regresyon öncesinde hibrit temizlik prosedüründen geçirilmiştir (imkânsız değerler çıkarılmış, izole eksik veriler ileri taşıma yöntemiyle doldurulmuştur).
+Durağanlık Augmented Dickey-Fuller (ADF) testi ile feature seçiminden önce sınanmıştır; bu sayede sahte korelasyon riski ortadan kaldırılmıştır.
 Çoklu doğrusallık Variance Inflation Factor (VIF > {vif_thr}) ile kontrol edilmiş, yüksek VIF değerine sahip değişkenler iteratif olarak çıkarılmıştır.
 Çoklu test sorununun yalancı anlamlılık riskini azaltmak amacıyla Spearman korelasyon eşiğine Bonferroni düzeltmesi uygulanmıştır.
-Farklı skalalı değişkenlerin sayısal kararlılığını sağlamak amacıyla Spearman ve VIF filtresi sonrası kalan feature'lara RobustScaler uygulanmıştır.
-Durağanlık Augmented Dickey-Fuller (ADF) testi ile sınanmıştır.
+Farklı skalalı değişkenlerin sayısal kararlılığını sağlamak amacıyla ADF, Spearman ve VIF filtresi sonrası kalan feature'lara RobustScaler uygulanmıştır.
 {return_note}{hac_note}{coint_note}{reset_note}{cusum_note}
 Final modelde {len(sig_f)} değişken istatistiksel olarak anlamlı bulunmuştur (p < 0.05): {', '.join(sig_f) if sig_f else 'Yok'}.
 
