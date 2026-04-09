@@ -428,10 +428,12 @@ if run and symbol:
     applied = []
     step    = 0
 
-    # Hedef dışındaki tüm numerik sütunlar bağımsız değişken adayı
+    # Return her zaman candidates'dan çıkar (Close'tan türetilmiş — totoloji riski)
+    # Ancak kullanıcı Return'ü hedef seçebilir
     candidates = [c for c in df.columns
                   if pd.api.types.is_numeric_dtype(df[c])
-                  and c != target]
+                  and c != target
+                  and c != "Return"]
 
     # ── Ham veri: ADF için tüm candidates + target ──────────────
     raw_sub = df[candidates + [target]].dropna().copy()
