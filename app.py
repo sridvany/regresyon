@@ -425,11 +425,13 @@ if run and symbol:
     step    = 0
 
     # Return her zaman candidates'dan çıkar (Close'tan türetilmiş — totoloji riski)
-    # Ancak kullanıcı Return'ü hedef seçebilir
+    # Target Return ise Close da çıkar (Return = Close.pct_change())
+    _exclude = {target, "Return"}
+    if target == "Return":
+        _exclude.add("Close")
     candidates = [c for c in df.columns
                   if pd.api.types.is_numeric_dtype(df[c])
-                  and c != target
-                  and c != "Return"]
+                  and c not in _exclude]
 
     # ── Ham veri: ADF için tüm candidates + target ──────────────
     raw_sub = df[candidates + [target]].dropna().copy()
