@@ -1023,8 +1023,11 @@ Final modelde {len(sig_f)} değişken istatistiksel olarak anlamlı bulunmuştur
             oos_r2  = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
             rmse    = np.sqrt(np.mean((y_test - y_pred) ** 2))
 
-            # AR(1) benchmark
-            y_ar_pred = np.array([y_train[-1]] + list(y_test[:-1]))  # naive: t-1 değeri
+            # AR(1) benchmark — train verisiyle katsayı tahmin edilir
+            from statsmodels.tsa.ar_model import AutoReg
+            ar_model  = AutoReg(y_train, lags=1, old_names=False).fit()
+            y_ar_pred = ar_model.predict(start=len(y_train), end=len(y_train)+len(y_test)-1)
+            y_ar_pred = np.array(y_ar_pred)
             ss_ar     = np.sum((y_test - y_ar_pred) ** 2)
             ar_r2     = 1 - ss_ar / ss_tot if ss_tot > 0 else np.nan
             ar_rmse   = np.sqrt(np.mean((y_test - y_ar_pred) ** 2))
