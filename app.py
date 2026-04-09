@@ -411,10 +411,6 @@ if run and symbol:
         f"_(Seçilen aralık: {start_date} → {end_date})_"
     )
 
-    if target not in df.columns:
-        st.error(f"'{target}' sütunu veri setinde yok.")
-        st.stop()
-
     with st.spinner("İndikatörler hesaplanıyor..."):
         df = build_indicators(df)
         ohlc_mask = ~((df["Open"]==df["High"])&(df["High"]==df["Low"])&(df["Low"]==df["Close"]))
