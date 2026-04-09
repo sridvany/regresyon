@@ -293,6 +293,22 @@ selected_indicators = st.multiselect(
     placeholder="Seçim yapmak için tıklayın…"
 )
 
+MACRO_SYMBOLS = {
+    "DX-Y.NYB": "Dolar Endeksi (DXY)",
+    "^VIX":     "VIX — Korku Endeksi",
+    "GC=F":     "Altın",
+    "CL=F":     "Ham Petrol",
+    "USDTRY=X": "USD/TRY",
+    "^GSPC":    "S&P 500",
+    "XU100.IS": "BIST 100",
+}
+selected_macros = st.multiselect(
+    "🌍 Makro değişkenler (boş bırakılırsa tümü kullanılır)",
+    options=list(MACRO_SYMBOLS.values()),
+    default=[],
+    placeholder="Seçim yapmak için tıklayın…"
+)
+
 use_lag = st.checkbox("⏪ Lag uygula (t-1) — feature'lar bir gün geriye kaydırılır", value=True)
 use_wf  = st.checkbox("📊 Walk-Forward Validasyon — out-of-sample test (AR(1) benchmark dahil)", value=False)
 
@@ -381,6 +397,38 @@ if check_range and symbol:
                     st.session_state["clean_sym"]   = symbol.upper()
                     st.session_state["clean_start"] = start_date
                     st.session_state["clean_end"]   = end_date
+
+                    # ── Makro veri çek ──────────────────────────
+                    _active_macros = {k: v for k, v in MACRO_SYMBOLS.items()
+                                      if not selected_macros or v in selected_macros}
+                    _macro_frames = []
+                    _macro_errors = []
+                    for _sym, _label in _active_macros.items():
+                        try:
+                            _mdf = yf.download(_sym, start=str(start_date), end=str(end_date),
+                                               progress=False, auto_adjust=True)
+                            if _mdf.empty:
+                                _macro_errors.append(_label)
+                                continue
+                            if _mdf.index.tz is not None:
+                                _mdf.index = _mdf.index.tz_localize(None)
+                            _col = _label.replace(" ", "_").replace("/", "_").replace("^", "").replace("(", "").replace(")", "").replace("—", "").strip("_")
+                            _macro_frames.append(_mdf[["Close"]].rename(columns={"Close": _col}))
+                        except Exception as _me:
+                            _macro_errors.append(f"{_label}: {_me}")
+
+                    if _macro_frames:
+                        _macro_df = pd.concat(_macro_frames, axis=1)
+                        _macro_df.index = pd.to_datetime(_macro_df.index)
+                        _macro_df.columns = [str(c) if not isinstance(c, str) else c for c in _macro_df.columns]
+                        st.session_state["macro_df"] = _macro_df
+                        st.info(f"🌍 {len(_macro_frames)} makro değişken yüklendi: {', '.join([str(c) for c in _macro_df.columns])}")
+                    else:
+                        st.session_state["macro_df"] = None
+
+                    if _macro_errors:
+                        st.warning(f"⚠️ Yüklenemeyen makrolar: {', '.join(_macro_errors)}")
+
                     st.success(f"✅ Temizlenmiş veri hafızaya alındı — {_log['_n1']:,} satır. Sihirbazı başlatabilirsiniz.")
 
         except Exception as e:
@@ -418,6 +466,24 @@ if run and symbol:
         df = build_indicators(df)
         ohlc_mask = ~((df["Open"]==df["High"])&(df["High"]==df["Low"])&(df["Low"]==df["Close"]))
         df = df[ohlc_mask].dropna().copy()
+
+        # ── Makro veri birleştir ─────────────────────────────
+        _macro_df = st.session_state.get("macro_df", None)
+        if _macro_df is not None:
+            _macro_df.index = pd.to_datetime(_macro_df.index)
+            df.index = pd.to_datetime(df.index)
+            _macro_filtered = _macro_df.loc[
+                (_macro_df.index >= pd.Timestamp(start_date)) &
+                (_macro_df.index <= pd.Timestamp(end_date))
+            ]
+            df = df.join(_macro_filtered, how="left")
+            df[_macro_filtered.columns] = df[_macro_filtered.columns].ffill()
+            df = df.dropna(subset=_macro_filtered.columns).copy()
+            _macro_cols = [str(c) for c in _macro_filtered.columns]
+            step_card(0, "Makro Değişkenler Eklendi", "info",
+                      f"{len(_macro_cols)} makro değişken birleştirildi: {', '.join(_macro_cols)}",
+                      "Eksik günler (tatil farkı) ffill ile dolduruldu.")
+
         if use_lag:
             lag_cols = [c for c in df.columns if c != target and pd.api.types.is_numeric_dtype(df[c])]
             df[lag_cols] = df[lag_cols].shift(1)
