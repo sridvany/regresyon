@@ -248,7 +248,15 @@ def step_card(step_no, title, status, detail, fix=None):
 col1, col2 = st.columns(2)
 with col1:
     symbol = st.text_input("Sembol", placeholder="AAPL, THYAO.IS, BTC-USD")
-    target = st.text_input("Hedef Değişken", value="Close")
+    _all_cols = [
+        "Close", "Open", "High", "Low", "Volume",
+        "EMA_20", "EMA_50", "EMA_200", "RSI", "MACD", "ATR",
+        "BB_Upper", "BB_Lower", "BBW", "Return", "ROC",
+        "Stoch_K", "Stoch_D", "ADX", "Williams_R", "CCI",
+        "OBV", "CMF", "Volume_ROC", "MFI", "StochRSI_K", "StochRSI_D",
+        "Amihud", "MEC", "CS_Spread", "Daily_Range",
+    ]
+    target = st.selectbox("Hedef Değişken", options=_all_cols, index=0)
 with col2:
     start_date = st.date_input("Başlangıç",
                                value=pd.Timestamp("2020-01-01").date(),
@@ -266,6 +274,25 @@ with col4:
     corr_high = st.slider("|ρ| yüksek eşik", 0.90, 0.999, 0.995, 0.001, format="%.3f")
 with col5:
     vif_thr   = st.slider("VIF eşiği", 5.0, 20.0, 10.0, 0.5)
+
+ALL_INDICATORS = [
+    "Open", "High", "Low", "Volume",
+    "EMA_20", "EMA_50", "EMA_200",
+    "RSI", "MACD", "ATR",
+    "BB_Upper", "BB_Lower", "BBW",
+    "ROC", "Stoch_K", "Stoch_D",
+    "ADX", "Williams_R", "CCI",
+    "OBV", "CMF", "Volume_ROC", "MFI",
+    "StochRSI_K", "StochRSI_D",
+    "Amihud", "MEC", "CS_Spread", "Daily_Range",
+]
+
+selected_indicators = st.multiselect(
+    "📊 Kullanılacak indikatörler (boş bırakılırsa tümü kullanılır)",
+    options=ALL_INDICATORS,
+    default=[],
+    placeholder="Seçim yapmak için tıklayın…"
+)
 
 col_btn1, col_btn2 = st.columns([1, 3])
 with col_btn1:
@@ -403,10 +430,18 @@ if run and symbol:
     step    = 0
 
     # "Return" her zaman çıkar — totoloji riski
-    candidates = [c for c in df.columns
-                  if pd.api.types.is_numeric_dtype(df[c])
-                  and c != target
-                  and c != "Return"]
+    # Kullanıcı seçim yaptıysa sadece seçilenler, yoksa tümü
+    _all_numeric = [c for c in df.columns
+                    if pd.api.types.is_numeric_dtype(df[c])
+                    and c != target
+                    and c != "Return"]
+    if selected_indicators:
+        candidates = [c for c in selected_indicators if c in _all_numeric]
+        if not candidates:
+            st.error("Seçilen indikatörler veri setinde bulunamadı.")
+            st.stop()
+    else:
+        candidates = _all_numeric
 
     # ── Ham veri: ADF için tüm candidates + target ──────────────
     raw_sub = df[candidates + [target]].dropna().copy()
