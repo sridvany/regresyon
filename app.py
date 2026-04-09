@@ -428,19 +428,10 @@ if run and symbol:
     applied = []
     step    = 0
 
-    # "Return" her zaman çıkar — totoloji riski
-    # Kullanıcı seçim yaptıysa sadece seçilenler, yoksa tümü
-    _all_numeric = [c for c in df.columns
-                    if pd.api.types.is_numeric_dtype(df[c])
-                    and c != target
-                    and c != "Return"]
-    if selected_indicators:
-        candidates = [c for c in selected_indicators if c in _all_numeric]
-        if not candidates:
-            st.error("Seçilen indikatörler veri setinde bulunamadı.")
-            st.stop()
-    else:
-        candidates = _all_numeric
+    # Hedef dışındaki tüm numerik sütunlar bağımsız değişken adayı
+    candidates = [c for c in df.columns
+                  if pd.api.types.is_numeric_dtype(df[c])
+                  and c != target]
 
     # ── Ham veri: ADF için tüm candidates + target ──────────────
     raw_sub = df[candidates + [target]].dropna().copy()
