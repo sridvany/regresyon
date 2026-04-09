@@ -293,6 +293,9 @@ selected_indicators = st.multiselect(
     placeholder="Seçim yapmak için tıklayın…"
 )
 
+use_lag = st.checkbox("⏪ Lag uygula (t-1) — feature'lar bir gün geriye kaydırılır", value=True)
+use_wf  = st.checkbox("📊 Walk-Forward Validasyon — out-of-sample test (AR(1) benchmark dahil)", value=False)
+
 col_btn1, col_btn2 = st.columns([1, 3])
 with col_btn1:
     check_range = st.button("📅 Veri Aralığı", use_container_width=True)
@@ -415,6 +418,10 @@ if run and symbol:
         df = build_indicators(df)
         ohlc_mask = ~((df["Open"]==df["High"])&(df["High"]==df["Low"])&(df["Low"]==df["Close"]))
         df = df[ohlc_mask].dropna().copy()
+        if use_lag:
+            lag_cols = [c for c in df.columns if c != target and pd.api.types.is_numeric_dtype(df[c])]
+            df[lag_cols] = df[lag_cols].shift(1)
+            df = df.dropna().copy()
 
     if target not in df.columns:
         st.error(f"'{target}' sütunu indikatör hesabı sonrası bulunamadı.")
@@ -423,6 +430,14 @@ if run and symbol:
     notes   = []
     applied = []
     step    = 0
+
+    if use_lag:
+        step_card(0, "Lag Uygulandı (t-1)", "fix",
+                  f"Tüm feature'lar bir gün geriye kaydırıldı. "
+                  f"Model yalnızca dünün bilgisiyle bugünün '{target}'ını tahmin eder — bilgi kirlenmesi yok.",
+                  "df[feature_cols].shift(1)")
+        applied.append("Lag (t-1) — bilgi kirlenmesi önlendi")
+        notes.append("Lag: tüm feature'lar t-1 gecikmeli.")
 
     # Return her zaman candidates'dan çıkar (Close'tan türetilmiş — totoloji riski)
     # Target Return ise Close da çıkar (Return = Close.pct_change())
@@ -980,3 +995,66 @@ Final modelde {len(sig_f)} değişken istatistiksel olarak anlamlı bulunmuştur
 
 **Sınırlılıklar:** Bağımsız değişkenlerin büyük bölümü hedef değişkenden türetilmiş teknik indikatörlerdir. İçsellik (endogeneity) riski nedeniyle bulgular nedensellik değil, korelasyon ilişkisi olarak yorumlanmalıdır.
         """)
+    # ==============================================================
+    # WALK-FORWARD VALIDASYON
+    # ==============================================================
+    if use_wf:
+        st.divider()
+        st.subheader("📊 Walk-Forward Validasyon")
+        st.caption("Train: ilk %70 | Test: son %30 — out-of-sample performans")
+
+        try:
+            n_total  = len(working)
+            n_train  = int(n_total * 0.70)
+
+            X_wf = add_constant(working[after_vif].values.astype(float))
+            y_wf = working[target].values.astype(float)
+
+            X_train, X_test = X_wf[:n_train], X_wf[n_train:]
+            y_train, y_test = y_wf[:n_train], y_wf[n_train:]
+
+            # OLS on train
+            ols_wf = OLS(y_train, X_train).fit()
+            y_pred = ols_wf.predict(X_test)
+
+            # Metrikler
+            ss_res  = np.sum((y_test - y_pred) ** 2)
+            ss_tot  = np.sum((y_test - np.mean(y_test)) ** 2)
+            oos_r2  = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
+            rmse    = np.sqrt(np.mean((y_test - y_pred) ** 2))
+
+            # AR(1) benchmark
+            y_ar_pred = np.array([y_train[-1]] + list(y_test[:-1]))  # naive: t-1 değeri
+            ss_ar     = np.sum((y_test - y_ar_pred) ** 2)
+            ar_r2     = 1 - ss_ar / ss_tot if ss_tot > 0 else np.nan
+            ar_rmse   = np.sqrt(np.mean((y_test - y_ar_pred) ** 2))
+
+            col_w1, col_w2, col_w3, col_w4 = st.columns(4)
+            col_w1.metric("Out-of-sample R²", f"{oos_r2:.4f}")
+            col_w2.metric("RMSE (model)",     f"{rmse:.6f}")
+            col_w3.metric("AR(1) R²",         f"{ar_r2:.4f}")
+            col_w4.metric("RMSE (AR(1))",     f"{ar_rmse:.6f}")
+
+            if oos_r2 > ar_r2:
+                st.success(f"✅ Model AR(1)'den iyi — OOS R²={oos_r2:.4f} > AR(1) R²={ar_r2:.4f}")
+            else:
+                st.warning(f"⚠️ Model AR(1)'i geçemedi — OOS R²={oos_r2:.4f} ≤ AR(1) R²={ar_r2:.4f}")
+
+            # Grafik
+            st.markdown("**Tahmin vs Gerçek (Test Dönemi)**")
+            fig_wf = go.Figure()
+            fig_wf.add_trace(go.Scatter(y=y_test,  mode="lines", name="Gerçek",
+                                        line=dict(color="#0d6efd", width=1)))
+            fig_wf.add_trace(go.Scatter(y=y_pred,  mode="lines", name="Model Tahmini",
+                                        line=dict(color="#d63384", width=1, dash="dash")))
+            fig_wf.add_trace(go.Scatter(y=y_ar_pred, mode="lines", name="AR(1)",
+                                        line=dict(color="#fd7e14", width=1, dash="dot")))
+            fig_wf.update_layout(height=300, margin=dict(l=40,r=20,t=20,b=40),
+                                 xaxis_title="Gözlem (test)", yaxis_title=target,
+                                 hovermode="x unified")
+            st.plotly_chart(fig_wf, use_container_width=True)
+
+            notes.append(f"Walk-forward: OOS R²={oos_r2:.4f}, RMSE={rmse:.6f} | AR(1): R²={ar_r2:.4f}, RMSE={ar_rmse:.6f}")
+
+        except Exception as e:
+            st.error(f"Walk-forward hatası: {e}")
