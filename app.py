@@ -248,14 +248,14 @@ def step_card(step_no, title, status, detail, fix=None):
 col1, col2 = st.columns(2)
 with col1:
     symbol = st.text_input("Sembol", placeholder="AAPL, THYAO.IS, BTC-USD")
-    if "clean_df" in st.session_state:
-        _base_df   = st.session_state["clean_df"].copy()
-        _base_df   = build_indicators(_base_df)
-        _all_cols  = [c for c in _base_df.columns if pd.api.types.is_numeric_dtype(_base_df[c])]
-    else:
-        _all_cols  = ["Close"]
-    _default = _all_cols.index("Close") if "Close" in _all_cols else 0
-    target = st.selectbox("Hedef Değişken", options=_all_cols, index=_default)
+    _all_cols = [
+        "Close","Open","High","Low","Volume","Return",
+        "EMA_20","EMA_50","EMA_200","RSI","MACD","ATR",
+        "BB_Upper","BB_Lower","BBW","ROC","Stoch_K","Stoch_D",
+        "ADX","Williams_R","CCI","OBV","CMF","Volume_ROC",
+        "MFI","StochRSI_K","StochRSI_D","Amihud","MEC","CS_Spread","Daily_Range",
+    ]
+    target = st.selectbox("Hedef Değişken", options=_all_cols, index=0)
 with col2:
     start_date = st.date_input("Başlangıç",
                                value=pd.Timestamp("2020-01-01").date(),
