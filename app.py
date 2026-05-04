@@ -309,8 +309,10 @@ selected_macros = st.multiselect(
     placeholder="Seçim yapmak için tıklayın…"
 )
 
-use_lag = st.checkbox("⏪ Lag uygula (t-1) — feature'lar bir gün geriye kaydırılır", value=True)
-use_wf  = st.checkbox("📊 Walk-Forward Validasyon — out-of-sample test (AR(1) benchmark dahil)", value=False)
+use_lag     = st.checkbox("⏪ Lag uygula (t-1) — feature'lar bir gün geriye kaydırılır", value=True)
+use_wf      = st.checkbox("📊 Walk-Forward Validasyon — out-of-sample test (AR(1) benchmark dahil)", value=False)
+use_reduced = st.checkbox("🔻 Model İndirgeme — anlamlı feature'larla yeniden OLS (post-selection uyarısı dahil)", value=False)
+use_aic_bic = st.checkbox("⚖️ AIC/BIC Karşılaştırması — tam model vs indirgenmiş model", value=False)
 
 col_btn1, col_btn2 = st.columns([1, 3])
 with col_btn1:
@@ -999,6 +1001,122 @@ if run and symbol:
     fig_qq.update_layout(height=280, margin=dict(l=40,r=20,t=20,b=40),
                          xaxis_title="Teorik Kantiller", yaxis_title="Örnek Kantiller")
     st.plotly_chart(fig_qq, use_container_width=True)
+
+    # ==============================================================
+    # ADIM 11 — MODEL İNDİRGEME + AIC/BIC KARŞILAŞTIRMASI (opsiyonel)
+    # ==============================================================
+    ols_red = None
+    if (use_reduced or use_aic_bic) and len(sig_f) > 0 and len(sig_f) < len(after_vif):
+        try:
+            X_arr_red = working[sig_f].values.astype(float)[valid]
+            X_red     = add_constant(X_arr_red)
+            if use_hac:
+                ols_red = OLS(y, X_red).fit(cov_type="HAC", cov_kwds={"maxlags": 5})
+            else:
+                ols_red = OLS(y, X_red).fit()
+        except Exception as e:
+            st.error(f"İndirgenmiş model kurulamadı: {e}")
+            ols_red = None
+
+    if use_reduced and ols_red is not None:
+        step += 1
+        st.divider()
+        st.subheader(f"🔻 Adım {step} — Model İndirgeme")
+        st.caption(f"Sadece anlamlı feature'lar ({len(sig_f)} adet) ile yeniden fit edilen OLS")
+
+        st.warning(
+            "⚠️ **Post-Selection Inference Uyarısı:** Bu modelin feature'ları ana modelin "
+            "p-değerlerine bakılarak seçildiği için, aşağıdaki p-değerleri ve standart hatalar "
+            "post-selection bias içerir. Tablo **tanımlayıcı** amaçlıdır; çıkarımsal değildir "
+            "(Berk et al. 2013). Geçerli model kıyaslaması için AIC/BIC karşılaştırmasına bakın."
+        )
+
+        col_a, col_b, col_c, col_d = st.columns(4)
+        col_a.metric("R²",      f"{ols_red.rsquared:.4f}")
+        col_b.metric("Adj. R²", f"{ols_red.rsquared_adj:.4f}")
+        col_c.metric("AIC",     f"{ols_red.aic:.2f}")
+        col_d.metric("BIC",     f"{ols_red.bic:.2f}")
+
+        col_e, col_f = st.columns(2)
+        col_e.metric("F-istatistiği", f"{ols_red.fvalue:.4f}")
+        col_f.metric("F p-değeri",    f"{ols_red.f_pvalue:.4f}")
+
+        st.markdown("**İndirgenmiş Model Katsayıları**")
+        red_names = ["const"] + sig_f
+        red_rows  = []
+        for i, fname in enumerate(red_names):
+            if fname == "const": continue
+            pval = ols_red.pvalues[i]
+            sig  = "✅ Anlamlı" if pval < 0.05 else ("⚠️ Sınırda" if pval < 0.10 else "❌ Anlamsız")
+            red_rows.append({
+                "Feature":       fname,
+                "Katsayı":       round(ols_red.params[i], 6),
+                "Std Hata":      round(ols_red.bse[i], 6),
+                "t-istatistiği": round(ols_red.tvalues[i], 4),
+                "p-değeri":      round(pval, 4),
+                "Anlamlılık":    sig,
+            })
+        red_df = pd.DataFrame(red_rows)
+        st.dataframe(
+            red_df.style
+                .format({"Katsayı": "{:.6f}", "Std Hata": "{:.6f}", "t-istatistiği": "{:.4f}", "p-değeri": "{:.4f}"})
+                .map(_sc, subset=["Anlamlılık"]),
+            use_container_width=True, hide_index=True,
+        )
+        applied.append(f"Model İndirgeme ({len(sig_f)} anlamlı feature)")
+        notes.append(f"İndirgenmiş model: R²={ols_red.rsquared:.4f}, AIC={ols_red.aic:.2f}")
+
+    if use_aic_bic:
+        step += 1
+        st.divider()
+        st.subheader(f"⚖️ Adım {step} — AIC/BIC Karşılaştırması")
+
+        if ols_red is None:
+            if len(sig_f) == 0:
+                st.info("Anlamlı feature bulunmadığı için karşılaştırma yapılamadı.")
+            elif len(sig_f) >= len(after_vif):
+                st.info("Tüm feature'lar zaten anlamlı — indirgenmiş model tam modelle aynı olur.")
+            else:
+                st.info("İndirgenmiş model kurulamadı.")
+        else:
+            d_aic = ols_red.aic - ols_fit.aic
+            d_bic = ols_red.bic - ols_fit.bic
+
+            st.markdown("**Model Karşılaştırması**")
+            cmp_df = pd.DataFrame({
+                "Model":         ["Tam Model", "İndirgenmiş Model", "Δ (İndirgenmiş − Tam)"],
+                "Feature Sayısı":[len(after_vif), len(sig_f), len(sig_f) - len(after_vif)],
+                "R²":            [round(ols_fit.rsquared, 4),     round(ols_red.rsquared, 4),     round(ols_red.rsquared - ols_fit.rsquared, 4)],
+                "Adj. R²":       [round(ols_fit.rsquared_adj, 4), round(ols_red.rsquared_adj, 4), round(ols_red.rsquared_adj - ols_fit.rsquared_adj, 4)],
+                "AIC":           [round(ols_fit.aic, 2),          round(ols_red.aic, 2),          round(d_aic, 2)],
+                "BIC":           [round(ols_fit.bic, 2),          round(ols_red.bic, 2),          round(d_bic, 2)],
+            })
+            st.dataframe(cmp_df, use_container_width=True, hide_index=True)
+
+            # Yorum
+            def _interpret(delta, criterion):
+                if delta < -10:  return f"✅ İndirgenmiş model **güçlü tercih** ({criterion} Δ = {delta:.2f} < −10)"
+                if delta < -2:   return f"✅ İndirgenmiş model **tercih edilir** ({criterion} Δ = {delta:.2f} < −2)"
+                if delta <= 2:   return f"➖ İki model **kayda değer farksız** (|{criterion} Δ| = {abs(delta):.2f} ≤ 2)"
+                if delta <= 10:  return f"⚠️ Tam model **tercih edilir** ({criterion} Δ = {delta:.2f} > 2)"
+                return f"❌ Tam model **güçlü tercih** ({criterion} Δ = {delta:.2f} > 10)"
+
+            st.markdown(f"- {_interpret(d_aic, 'AIC')}")
+            st.markdown(f"- {_interpret(d_bic, 'BIC')}")
+            st.caption(
+                "Eşik değerler: |Δ| ≤ 2 farksız, 2 < |Δ| ≤ 10 anlamlı fark, |Δ| > 10 güçlü tercih "
+                "(Burnham & Anderson 2002). Düşük AIC/BIC tercih edilir."
+            )
+
+            if d_aic < -2 and d_bic < -2:
+                st.success("📌 **Sonuç:** İndirgenmiş model hem AIC hem BIC açısından daha iyi — sade model tercih edilebilir.")
+            elif d_aic > 2 and d_bic > 2:
+                st.warning("📌 **Sonuç:** Tam model hem AIC hem BIC açısından daha iyi — feature'ları çıkarmak bilgi kaybına yol açıyor.")
+            else:
+                st.info("📌 **Sonuç:** Modeller karışık sinyal veriyor — domain bilgisi ve parsimony tercihinize göre karar verin.")
+
+            applied.append(f"AIC/BIC karşılaştırması (ΔAIC={d_aic:.2f}, ΔBIC={d_bic:.2f})")
+            notes.append(f"AIC/BIC: tam vs indirgenmiş ΔAIC={d_aic:.2f}, ΔBIC={d_bic:.2f}")
 
     # ==============================================================
     # ÖZET RAPOR
